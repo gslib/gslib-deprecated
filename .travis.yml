@@ -1,0 +1,11 @@
+language: c
+
+addons:
+  apt:
+    sources:
+    - gfortran
+    - mpich2
+    - libmpich2-dev
+
+install:
+ - make
