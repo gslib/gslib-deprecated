@@ -1,11 +1,9 @@
 language: c
 
-addons:
-  apt:
-    sources:
-    - gfortran
-    - mpich2
-    - libmpich2-dev
+before_install: 
+ - export ROOT_DIR=`pwd`
+ - sudo apt-get update -qq
+ - sudo apt-get install -y mpich2 libmpich2-dev 
 
 install:
  - make
