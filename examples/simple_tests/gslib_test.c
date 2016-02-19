@@ -57,6 +57,7 @@ int main(int narg, char *arg[])
   int elementIndex,targetCore,i,j,nid,k;
   char buffer[1024];
   char inpFile[128];
+  char* file;
   int **mat,fail;
   T *v;
 
@@ -72,7 +73,14 @@ int main(int narg, char *arg[])
   MPI_Comm_rank(world,&nid);
 
   if(nid==0){
-    inp = fopen(arg[1],"r");
+
+    if(arg[1]==NULL) {
+      file = "a.map";
+    } else {
+      file = arg[1];
+    }
+
+    inp = fopen(file,"r");
     mat = (int **) malloc(sizeof(int *)*np);
     //Only supports 2d right now
     fgets(buffer,1024,inp);
@@ -186,7 +194,7 @@ int main(int narg, char *arg[])
     MPI_Scatterv(sendbuf,sendcounts,displs,MPI_LONG,recvbuf,localBufSpace,MPI_LONG,0,world);
   }
 
-  gsh = gs_setup(recvbuf,localBufSpace,&comm,0,gs_crystal_router,1);
+  gsh = gs_setup(recvbuf,localBufSpace,&comm,0,gs_pairwise,1);
   printf("after setup, nid: %d\n",nid);
 #pragma acc enter data create(v[0:localBufSpace])
 #pragma acc enter data copyin(recvbuf[0:localBufSpace])
@@ -222,13 +230,17 @@ int main(int narg, char *arg[])
     v[i] = recvbuf[i];
   }
 
+  printf("localBuf: %d\n",localBufSpace);
   gs_irecv(v,dom,gs_mul,0,gsh,0);
-  gs_isend(v,dom,gs_mul,0,gsh,0);
+  for(i=0;i<localBufSpace;i++){
+    gs_isend_e(v,dom,gs_mul,0,gsh,0,i,1);
+  }
   gs_wait(v,dom,gs_mul,0,gsh,0);
   //  gs(v,dom,gs_mul,0,gsh,0);
 
 #pragma acc update host(v[0:localBufSpace])
   fail = 0;
+  MPI_Barrier(MPI_COMM_WORLD);
   //Check v
   for(i=0;i<localBufSpace;i++){
     if(v[i]!=pow(recvbuf[i],duplicate_count[recvbuf[i]])){

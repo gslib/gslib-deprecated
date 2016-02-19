@@ -9,6 +9,7 @@
 #define gs_init_array          PREFIXED_NAME(gs_init_array         )
 #define gs_gather              PREFIXED_NAME(gs_gather             )
 #define gs_scatter             PREFIXED_NAME(gs_scatter            )
+#define gs_scatter_e           PREFIXED_NAME(gs_scatter_e          )
 #define gs_init                PREFIXED_NAME(gs_init               )
 #define gs_gather_vec          PREFIXED_NAME(gs_gather_vec         )
 #define gs_scatter_vec         PREFIXED_NAME(gs_scatter_vec        )
@@ -108,6 +109,7 @@ _Pragma("acc loop seq")					   \
 _Pragma("acc wait")						   \
 }
 
+
 /*------------------------------------------------------------------------------
   The basic initialization kernel
 ------------------------------------------------------------------------------*/
@@ -199,6 +201,45 @@ GS_FOR_EACH_DOMAIN(DEFINE_PROCS)
 #undef DEFINE_INIT
 #undef DEFINE_GATHER
 
+/*------------------------------------------------------------------------------
+  The elemental scatter kernel
+------------------------------------------------------------------------------*/
+#define DEFINE_SCATTER(T)\
+static void scatter_e_##T( \
+  T *restrict out, const unsigned out_stride,                      \
+  const T *restrict in, const unsigned in_stride,                  \
+  const uint *restrict map,int dstride, int mf_nt, int*mapf,       \
+  int vn, int m_size, const uint **map_e, int start,int count,      \
+  int acc)                                                         \
+{                                                                  \
+  uint i,j,k,dstride_in=1,dstride_out=1;                           \
+  if(in_stride==1)  dstride_in=dstride;                            \
+  if(out_stride==1) dstride_out=dstride;                           \
+  for(k=0;k<vn;++k) {                                              \
+_Pragma("acc parallel loop gang vector present(map[0:m_size],in,mapf[0:2*mf_nt],out) async(k+1) if(acc)") \
+    for(i=start;i<start+count;i++){ \
+        if(map_e[i][0]!=-1) {                                         \
+          T t=in[in_stride*map[mapf[map_e[i][0]]]+k*dstride_in];           \
+          for(j=0;j<mapf[map_e[i][0]+1];j++) {                          \
+              out[out_stride*map[mapf[map_e[i][0]]+j+1]+k*dstride_out] = t;\
+          } \
+        } else {                                                       \
+          i=map_e[i][1]-1;                                                  \
+        }                                                               \
+    }                                                                   \
+  }                                                                     \
+_Pragma("acc wait")                                                   \
+}
+
+#define DEFINE_PROCS(T) \
+  DEFINE_SCATTER(T)
+
+GS_FOR_EACH_DOMAIN(DEFINE_PROCS)
+
+#undef DEFINE_PROCS
+#undef DEFINE_SCATTER
+
+
 #undef DO_bpr
 #undef DO_max
 #undef DO_min
@@ -248,7 +289,7 @@ void gs_gather(void *out, const void *in, const unsigned vn,
 
 void gs_scatter(void *out, const void *in, const unsigned vn,
                 const uint *map, gs_dom dom,int dstride, int mf_nt, 
-                int* mapf,int m_size, int acc)
+                int* mapf,int m_size, const uint **map_e, int start, int count, int acc)
 {
 #define WITH_DOMAIN(T) scatter_##T(out,1,in,1,map,dstride,mf_nt,mapf,vn,m_size,acc)
   SWITCH_DOMAIN(dom);
@@ -260,6 +301,19 @@ void gs_init(void *out, const unsigned vn, const uint *map,
 	     int *mapf, int m_size, int acc)
 {
 #define WITH_DOMAIN(T) init_##T(out,map,op,dstride,mf_nt,mapf,vn,m_size,acc)
+  SWITCH_DOMAIN(dom);
+#undef  WITH_DOMAIN
+}
+
+/*------------------------------------------------------------------------------
+  Elemental plain kernels; vn parameter ignored but present for consistent signatures
+------------------------------------------------------------------------------*/
+
+void gs_scatter_e(void *out, const void *in, const unsigned vn,
+                const uint *map, gs_dom dom,int dstride, int mf_nt, 
+                  int* mapf,int m_size, const uint **map_e, int start, int count, int acc)
+{
+#define WITH_DOMAIN(T) scatter_e_##T(out,1,in,1,map,dstride,mf_nt,mapf,vn,m_size,map_e,start,count,acc)
   SWITCH_DOMAIN(dom);
 #undef  WITH_DOMAIN
 }
@@ -304,7 +358,8 @@ void gs_gather_many(void *out, const void *in, const unsigned vn,
 
 void gs_scatter_many(void *out, const void *in, const unsigned vn,
                      const uint *map, gs_dom dom, int dstride,
-                     int mf_nt, int *mapf, int m_size, int acc)
+                     int mf_nt, int *mapf, int m_size, const uint **map_e, 
+                     int start, int count,int acc)
 {
 #define WITH_DOMAIN(T) scatter_##T(out,1,in,1,map,dstride,mf_nt,mapf,vn,m_size,acc)
   SWITCH_DOMAIN(dom);
@@ -339,7 +394,8 @@ void gs_gather_vec_to_many(void *out, const void *in, const unsigned vn,
 
 void gs_scatter_many_to_vec(void *out, const void *in, const unsigned vn,
                             const uint *map, gs_dom dom, int dstride,
-                            int mf_nt, int *mapf, int m_size, int acc)
+                            int mf_nt, int *mapf, int m_size, const uint **map_e, 
+                            int start, int count,int acc)
 {
 #define WITH_DOMAIN(T) \
   scatter_##T(out,vn,in,1,map,dstride,mf_nt,mapf,vn,m_size,acc)
@@ -349,7 +405,8 @@ void gs_scatter_many_to_vec(void *out, const void *in, const unsigned vn,
 
 void gs_scatter_vec_to_many(void *out, const void *in, const unsigned vn,
                             const uint *map, gs_dom dom,int dstride,
-                            int mf_nt, int *mapf, int m_size, int acc)
+                            int mf_nt, int *mapf, int m_size,const uint **map_e, 
+                            int start, int count, int acc)
 {
 #define WITH_DOMAIN(T) \
   scatter_##T(out,1,in,vn,map,dstride,mf_nt,mapf,vn,m_size,acc)

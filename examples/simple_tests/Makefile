@@ -24,8 +24,8 @@ CFLAGS+=-O0 -g
 CCCMD=$(CC) $(G) $(CFLAGS)
 LINKCMD=$(CC) $(G) $(LDFLAGS)
 #RLINKCMD = $(LD) -r
-all: gslib_test gs_alltoall
-clean: ; @$(RM) $(TESTS) *.o *.s
+all: gslib_test gs_alltoall gs_allreduce
+clean: ; @$(RM) $(TESTS) *.o *.s $(SRCLOC)/*.o
 
 cmds: ; @echo CC = $(CCCMD); echo LINK = $(LINKCMD);
 
@@ -38,4 +38,4 @@ GS_OBJECTS=$(SRCLOC)/gs.o $(SRCLOC)/sort.o $(SRCLOC)/sarray_transfer.o $(SRCLOC)
 
 gslib_test: gslib_test.o $(GS_OBJECTS);		@echo LINK $@; $(LINKCMD) $^ -lm -o $@
 gs_alltoall: gs_alltoall.o $(GS_OBJECTS);		@echo LINK $@; $(LINKCMD) $^ -o $@
-
+gs_allreduce: gs_allreduce.o $(GS_OBJECTS);		@echo LINK $@; $(LINKCMD) $^ -o $@

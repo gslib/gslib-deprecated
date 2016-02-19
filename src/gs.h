@@ -116,15 +116,18 @@
 
 */  
 
-#define gs         PREFIXED_NAME(gs       )
-#define gs_irecv   PREFIXED_NAME(gs_irecv )
-#define gs_isend   PREFIXED_NAME(gs_isend )
-#define gs_wait    PREFIXED_NAME(gs_wait  )
-#define gs_vec     PREFIXED_NAME(gs_vec   )
-#define gs_many    PREFIXED_NAME(gs_many  )
-#define gs_setup   PREFIXED_NAME(gs_setup )
-#define gs_free    PREFIXED_NAME(gs_free  )
-#define gs_unique  PREFIXED_NAME(gs_unique)
+#define gs               PREFIXED_NAME(gs       )
+#define gs_irecv         PREFIXED_NAME(gs_irecv )
+#define gs_isend         PREFIXED_NAME(gs_isend )
+#define gs_wait          PREFIXED_NAME(gs_wait  )
+#define gs_vec           PREFIXED_NAME(gs_vec   )
+#define gs_many          PREFIXED_NAME(gs_many  )
+#define gs_many_irecv    PREFIXED_NAME(gs_many_irecv  )
+#define gs_many_isend    PREFIXED_NAME(gs_many_isend  )
+#define gs_many_wait     PREFIXED_NAME(gs_many_wait  )
+#define gs_setup         PREFIXED_NAME(gs_setup )
+#define gs_free          PREFIXED_NAME(gs_free  )
+#define gs_unique        PREFIXED_NAME(gs_unique)
 
 struct gs_data;
 typedef enum {gs_auto, gs_pairwise, gs_crystal_router, gs_all_reduce} gs_method;
@@ -145,6 +148,14 @@ void gs_vec(void *u, unsigned vn, gs_dom dom, gs_op op,
             unsigned transpose, struct gs_data *gsh, buffer *buf);
 void gs_many(void *const*u, unsigned vn, gs_dom dom, gs_op op,
              unsigned transpose, struct gs_data *gsh, buffer *buf);
+
+void gs_many_irecv(void *const*u, unsigned vn, gs_dom dom, gs_op op,
+             unsigned transpose, struct gs_data *gsh, buffer *buf);
+void gs_many_isend(void *const*u, unsigned vn, gs_dom dom, gs_op op,
+             unsigned transpose, struct gs_data *gsh, buffer *buf);
+void gs_many_wait(void *const*u, unsigned vn, gs_dom dom, gs_op op,
+             unsigned transpose, struct gs_data *gsh, buffer *buf);
+
 struct gs_data *gs_setup(const slong *id, uint n, const struct comm *comm,
                          int unique, gs_method method, int verbose);
 void gs_free(struct gs_data *gsh);
