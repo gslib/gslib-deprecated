@@ -25,14 +25,6 @@
 GS_DEFINE_IDENTITIES()
 GS_DEFINE_DOM_SIZES()
 
-struct pw_send_queue {
-  int* buf_current; /* current number packed in each buf*/
-  int* buf_size;
-  int queue_length; /*number of messages currently ready in queue*/
-  int* queue; /* list of buffers ready to send */
-  int* map_to_buf; /* takes a map index and returns a buffer number */
-};
-
 /*------------------------------------------------------------------------------
   The array gather kernel
 ------------------------------------------------------------------------------*/
@@ -72,7 +64,7 @@ GS_FOR_EACH_DOMAIN(DEFINE_PROCS)
 static void gather_##T##_##OP( \
   T *restrict out, const T *restrict in, const unsigned in_stride,           \
   const uint *restrict map, int dstride, int mf_nt, int *mapf, \
-  int vn, int m_size,int start, int count, struct pw_send_queue *queue, int acc) \
+  int vn, int m_size, int acc)                            \
 {                                                                            \
   uint i,j,k;      \
   int dstride_in=1; \
@@ -99,8 +91,7 @@ static void scatter_##T( \
   T *restrict out, const unsigned out_stride,                      \
   const T *restrict in, const unsigned in_stride,                  \
   const uint *restrict map,int dstride, int mf_nt, int*mapf,       \
-  int vn, int m_size,int start, int count,\
-  struct pw_send_queue *queue, int acc)                                    \
+  int vn, int m_size, int acc)					   \
 {                                                                  \
   uint i,j,k,dstride_in=1,dstride_out=1;                           \
   if(in_stride==1)  dstride_in=dstride;                            \
@@ -174,9 +165,7 @@ static void gather_vec_##T##_##OP( \
 ------------------------------------------------------------------------------*/
 void gs_scatter_vec(
   void *restrict out, const void *restrict in, const unsigned vn,
-  const uint *restrict map, gs_dom dom, int dstride, int m_nt, int *mapf,
-  int mf_size, const uint *restrict map2,int start,int count, 
-  const pw_send_queue queue, int acc)
+  const uint *restrict map, gs_dom dom, int dstride, int m_nt, int *mapf)
 {
   unsigned unit_size = vn*gs_dom_size[dom];
   uint i,j;
@@ -221,9 +210,9 @@ static void scatter_e_##T( \
   const T *restrict in, const unsigned in_stride,                  \
   const uint *restrict map,int dstride, int mf_nt, int*mapf,       \
   int vn, int m_size, const uint **map_e, int start,int count,      \
-  struct pw_send_queue *queue, int acc)                              \
+  int acc)                                                         \
 {                                                                  \
-  uint i,j,k,dstride_in=1,dstride_out=1,index;                          \
+  uint i,j,k,dstride_in=1,dstride_out=1;                           \
   if(in_stride==1)  dstride_in=dstride;                            \
   if(out_stride==1) dstride_out=dstride;                           \
   for(k=0;k<vn;++k) {                                              \
@@ -232,12 +221,7 @@ _Pragma("acc parallel loop gang vector present(map[0:m_size],in,mapf[0:2*mf_nt],
         if(map_e[i][0]!=-1) {                                         \
           T t=in[in_stride*map[mapf[map_e[i][0]]]+k*dstride_in];           \
           for(j=0;j<mapf[map_e[i][0]+1];j++) {                          \
-            index = out_stride*map[mapf[map_e[i][0]]+j+1]+k*dstride_out; \
-            out[index] = t;                                             \
-            queue->buf_current[map_to_buf[index]]++;                    \
-            if(queue->buf_current[map_to_buf[index]]==queue->buf_size[map_to_buf[index]]) {\
-              queue->queue[queue_length] = map_to_buf[index];\
-              queue->queue_length++; \
+              out[out_stride*map[mapf[map_e[i][0]]+j+1]+k*dstride_out] = t;\
           } \
         } else {                                                       \
           i=map_e[i][1]-1;                                                  \
