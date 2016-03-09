@@ -418,7 +418,6 @@ struct pw_comm_data {
   uint *size;  /* size of message */
   uint total;  /* sum of message sizes */
 };
-
 struct pw_send_queue {
   int* buf_current; /* current number packed in each buf*/
   int* buf_size;
@@ -499,12 +498,8 @@ static void pw_exec(
 
   /* fill send buffer */
   //  printf("mode: %d\n",mode);
-  /* scatter_to_buf[mode](sendbuf,data,vn,pwd->map[send],dom,dstride,pwd->mf_nt[send], */
-  /*                      pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],1,1,NULL,acc); */
-
   scatter_to_buf[mode](sendbuf,data,vn,pwd->map[send],dom,dstride,pwd->mf_nt[send],
-                       pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],1,1,NULL,acc);
-
+                       pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],1,1,acc);
 
   double* t = data;
 
@@ -571,8 +566,7 @@ static void pw_exec_isend(
   sendbuf = buf+unit_size*pwd->comm[recv].total;
 
   scatter_to_buf[mode](sendbuf,data,vn,pwd->map[send],dom,dstride,pwd->mf_nt[send],
-                       pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],start,count,
-                       pwd->queue[send],acc);
+                       pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],start,count,acc);
 
   
 #pragma acc update host(sendbuf[0:unit_size*bufSize/2]) if(acc)
@@ -688,7 +682,6 @@ static struct pw_data *pw_setup_aux(struct array *sh, buffer *buf,
   *mem_size+=pw_comm_setup(&pwd->comm[0],sh, FLAGS_REMOTE, buf);
   pw_send_queue_setup(&pwd->comm[0],&pwd->queue[0]);
   pwd->map[0] = pw_map_setup(sh, buf, mem_size);
-
   /* Get flattened map */
   gs_flatmap_setup(pwd->map[0],&(pwd->mapf[0]),&(pwd->mf_nt[0]),&(pwd->mf_size[0]));
 
@@ -705,8 +698,6 @@ static struct pw_data *pw_setup_aux(struct array *sh, buffer *buf,
   
   /* Get element map */
   gs_element_map_setup(pwd->map[1],pwd->mapf[1],&(pwd->map_e[1]),data_size);
-  
-
   if(comm->id==0){
   /* printf("MAP\n"); */
   /* print_map(pwd->map[1],pwd->mf_size[1]); */
@@ -1238,7 +1229,7 @@ static struct cr_data *cr_setup_aux(
 static void cr_free_stage_maps(struct cr_stage *stage, unsigned kmax)
 {
   unsigned k;
-  const uint *map,*mapf;
+  int *map,*mapf;
   for(k=0; k<kmax; ++k) {
     map = stage->scatter_map;
     mapf = stage->scatter_mapf;
@@ -1897,6 +1888,7 @@ void gs_element_map_setup(const uint *map, int *mapf, int ***map_e,int data_size
   return;
 }
 
+
 void pw_send_queue_setup(const struct pw_comm_data *c,struct pw_send_queue *queue)
 {
   const uint *p, *pe, *size=c->size;
@@ -1905,6 +1897,7 @@ void pw_send_queue_setup(const struct pw_comm_data *c,struct pw_send_queue *queu
 
   queue->buf_current = tmalloc(int,c->n);
   queue->map_to_buf = tmalloc(int,c->total);
+  queue->buf_size = tmalloc(int,c->n);
   i=0;
   for(p=c->p,pe=p+c->n;p!=pe;++p) {
     queue->buf_current[i] = 0;
@@ -1918,7 +1911,6 @@ void pw_send_queue_setup(const struct pw_comm_data *c,struct pw_send_queue *queu
 
   return;
 }
-
 
 static int map_size(const uint *map, int *t)
 {
