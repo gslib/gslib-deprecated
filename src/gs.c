@@ -419,8 +419,17 @@ struct pw_comm_data {
   uint total;  /* sum of message sizes */
 };
 
+struct pw_send_queue {
+  int* buf_current; /* current number packed in each buf*/
+  int* buf_size;
+  int queue_length; /*number of messages currently ready in queue*/
+  int* queue; /* list of buffers ready to send */
+  int* map_to_buf; /* takes a map index and returns a buffer number */
+};
+
 struct pw_data {
   struct pw_comm_data comm[2];
+  struct pw_send_queue queue[2];
   const uint *map[2];
   int *mapf[2];
   int *map_e[2];
@@ -490,8 +499,12 @@ static void pw_exec(
 
   /* fill send buffer */
   //  printf("mode: %d\n",mode);
+  /* scatter_to_buf[mode](sendbuf,data,vn,pwd->map[send],dom,dstride,pwd->mf_nt[send], */
+  /*                      pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],1,1,NULL,acc); */
+
   scatter_to_buf[mode](sendbuf,data,vn,pwd->map[send],dom,dstride,pwd->mf_nt[send],
-                       pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],1,1,acc);
+                       pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],1,1,NULL,acc);
+
 
   double* t = data;
 
@@ -558,7 +571,8 @@ static void pw_exec_isend(
   sendbuf = buf+unit_size*pwd->comm[recv].total;
 
   scatter_to_buf[mode](sendbuf,data,vn,pwd->map[send],dom,dstride,pwd->mf_nt[send],
-                       pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],start,count,acc);
+                       pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],start,count,
+                       pwd->queue[send],acc);
 
   
 #pragma acc update host(sendbuf[0:unit_size*bufSize/2]) if(acc)
@@ -672,6 +686,7 @@ static struct pw_data *pw_setup_aux(struct array *sh, buffer *buf,
   
   /* default behavior: receive only remotely unflagged data */
   *mem_size+=pw_comm_setup(&pwd->comm[0],sh, FLAGS_REMOTE, buf);
+  pw_send_queue_setup(&pwd->comm[0],&pwd->queue[0]);
   pwd->map[0] = pw_map_setup(sh, buf, mem_size);
 
   /* Get flattened map */
@@ -682,6 +697,7 @@ static struct pw_data *pw_setup_aux(struct array *sh, buffer *buf,
 
   /* default behavior: send only locally unflagged data */
   *mem_size+=pw_comm_setup(&pwd->comm[1],sh, FLAGS_LOCAL, buf);
+  pw_send_queue_setup(&pwd->comm[1],&pwd->queue[1]);
   pwd->map[1] = pw_map_setup(sh, buf, mem_size);
 
   /* Get flattened map */
@@ -689,6 +705,8 @@ static struct pw_data *pw_setup_aux(struct array *sh, buffer *buf,
   
   /* Get element map */
   gs_element_map_setup(pwd->map[1],pwd->mapf[1],&(pwd->map_e[1]),data_size);
+  
+
   if(comm->id==0){
   /* printf("MAP\n"); */
   /* print_map(pwd->map[1],pwd->mf_size[1]); */
@@ -1220,7 +1238,7 @@ static struct cr_data *cr_setup_aux(
 static void cr_free_stage_maps(struct cr_stage *stage, unsigned kmax)
 {
   unsigned k;
-  int *map,*mapf;
+  const uint *map,*mapf;
   for(k=0; k<kmax; ++k) {
     map = stage->scatter_map;
     mapf = stage->scatter_mapf;
@@ -1878,6 +1896,29 @@ void gs_element_map_setup(const uint *map, int *mapf, int ***map_e,int data_size
 
   return;
 }
+
+void pw_send_queue_setup(const struct pw_comm_data *c,struct pw_send_queue *queue)
+{
+  const uint *p, *pe, *size=c->size;
+  uint    i,j,k,current_size,num_bufs;
+  int     last_i;
+
+  queue->buf_current = tmalloc(int,c->n);
+  queue->map_to_buf = tmalloc(int,c->total);
+  i=0;
+  for(p=c->p,pe=p+c->n;p!=pe;++p) {
+    queue->buf_current[i] = 0;
+    current_size = size[i];
+    queue->buf_size[i] = current_size;
+    for(j=0;j<current_size;j++){
+      queue->map_to_buf[j] = i;
+    }
+    i++;
+  }
+
+  return;
+}
+
 
 static int map_size(const uint *map, int *t)
 {
