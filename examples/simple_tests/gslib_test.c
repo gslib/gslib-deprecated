@@ -230,13 +230,13 @@ int main(int narg, char *arg[])
     v[i] = recvbuf[i];
   }
 
-  printf("localBuf: %d\n",localBufSpace);
+  /* printf("localBuf: %d\n",localBufSpace); */
   gs_irecv(v,dom,gs_mul,0,gsh,0);
   for(i=0;i<localBufSpace;i++){
-    gs_isend_e(v,dom,gs_mul,0,gsh,0,i,1);
+    gs_isend(v,dom,gs_mul,0,gsh,0);
   }
   gs_wait(v,dom,gs_mul,0,gsh,0);
-  //  gs(v,dom,gs_mul,0,gsh,0);
+  //gs(v,dom,gs_mul,0,gsh,0);
 
 #pragma acc update host(v[0:localBufSpace])
   fail = 0;
