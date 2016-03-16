@@ -493,9 +493,9 @@ static char *pw_exec_single_send(char *buf, const unsigned unit_size,
   /*   i++; */
   /* } */
   p=c->p;
-  printf("req %d ,buf %d,p %d\n",req[buf_number],buf+buf_offset*unit_size,*p);
-  req+=buf_number;
-  comm_isend(req,comm,buf+buf_offset*unit_size,len,p[i],comm->id);
+  printf("buf_number %d %d %d\n",buf_number,buf_offset,comm_gbl_id);
+
+  comm_isend(req,comm,buf+buf_offset*unit_size,len,p[buf_number],comm->id);
 
   return buf;
 }
@@ -524,7 +524,7 @@ static void pw_exec(
   //  printf("mode: %d\n",mode);
   scatter_to_buf[mode](sendbuf,data,vn,pwd->map[send],dom,dstride,pwd->mf_nt[send],
                        pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],
-                       pwd->queue[send],1,1,acc);
+                       &pwd->queue[send],1,1,acc);
 
   double* t = data;
 
@@ -589,10 +589,10 @@ static void pw_exec_isend(
   size=c->size;
 
   sendbuf = buf+unit_size*pwd->comm[recv].total;
-
+  printf("queuelength: %d\n",pwd->queue[send].queue_length);
   scatter_to_buf[mode](sendbuf,data,vn,pwd->map[send],dom,dstride,pwd->mf_nt[send],
                        pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],
-                       pwd->queue[send],start,count,acc);
+                       &pwd->queue[send],start,count,acc);
 
   
 #pragma acc update host(sendbuf[0:unit_size*bufSize/2]) if(acc)
@@ -602,18 +602,18 @@ static void pw_exec_isend(
   /*                &pwd->req[pwd->comm[recv].n]); */
 
   //
-
+  printf("queuelength: %d\n",pwd->queue[send].queue_length);
   for(i=0;i<pwd->queue[send].queue_length;i++) {
-    printf("queue: %d\n",pwd->queue[send].queue[i]);
+    printf("queue loop: %d %d\n",pwd->queue[send].queue[i],pwd->queue[send].queue[i]);
     pw_exec_single_send(sendbuf,unit_size,comm,&pwd->comm[send],
-                        &pwd->req[pwd->comm[recv].n],pwd->queue[send].queue[i],
-                        pwd->queue[send].buf_offset[i]);
+                        &pwd->req[pwd->comm[recv].n+pwd->queue[send].queue[i]],
+                        pwd->queue[send].queue[i],
+                        pwd->queue[send].buf_offset[pwd->queue[send].queue[i]]);
   }
   printf("After scatter %d\n",pwd->queue[send].queue_length);
   //Reset queue
   for(i=0;i<pwd->queue[send].queue_length;i++) {
     pwd->queue[send].queue[i] = 0;
-    //    pw_exec_single_send(pwd->req[pwd->comm[recv].n+i]);
   }
   pwd->queue[send].queue_length = 0;
   printf("After scatter2 %d\n",pwd->queue[send].queue_length);
@@ -836,12 +836,12 @@ static void cr_exec(
     if(k==0)
       scatter_user_to_buf[mode](sendbuf,data,vn,stage[0].scatter_map,dom,dstride,
                                 stage[0].s_nt,stage[0].scatter_mapf,stage[0].s_size,
-                                stage[0].scatter_mapf,stage[0].queue,1,1,acc);
+                                stage[0].scatter_mapf,&stage[0].queue,1,1,acc);
     else
       //FIXME : fix map_e argument in this routine
       scatter_buf_to_buf[mode](sendbuf,buf_old,vn,stage[k].scatter_map,dom,dstride,
                                stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
-                               stage[k].scatter_mapf,stage[k].queue,1,1,acc),
+                               stage[k].scatter_mapf,&stage[k].queue,1,1,acc),
         gather_buf_to_buf [mode](sendbuf,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
                                  stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,acc);
     //Need to update gather vec and scatter vec!
@@ -855,7 +855,7 @@ static void cr_exec(
   }
   scatter_buf_to_user[mode](data,buf_old,vn,stage[k].scatter_map,dom,dstride,
                             stage[k].s_nt,stage[k].scatter_mapf,
-                            stage[k].s_size,stage[k].scatter_mapf,stage[k].queue,
+                            stage[k].s_size,stage[k].scatter_mapf,&stage[k].queue,
                             1,1,acc);
   gather_buf_to_user [mode](data,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
                             stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,acc);
@@ -932,11 +932,11 @@ static void cr_exec_isend(
     if(k==0)
       scatter_user_to_buf[mode](sendbuf,data,vn,stage[0].scatter_map,dom,dstride,
                                 stage[0].s_nt,stage[0].scatter_mapf,stage[0].s_size,
-                                stage[0].scatter_mapf,stage[0].queue,1,1,acc);
+                                stage[0].scatter_mapf,&stage[0].queue,1,1,acc);
     else
       scatter_buf_to_buf[mode](sendbuf,buf_old,vn,stage[k].scatter_map,dom,dstride,
                                stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
-                               stage[k].scatter_mapf,stage[k].queue,1,1,acc),
+                               stage[k].scatter_mapf,&stage[k].queue,1,1,acc),
         gather_buf_to_buf [mode](sendbuf,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
                                  stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,acc);
     //Need to update gather vec and scatter vec!
@@ -948,7 +948,7 @@ static void cr_exec_isend(
   }
   scatter_buf_to_user[mode](data,buf_old,vn,stage[k].scatter_map,dom,dstride,
                             stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
-                            stage[k].scatter_mapf,stage[k].queue,1,1,acc);
+                            stage[k].scatter_mapf,&stage[k].queue,1,1,acc);
   gather_buf_to_user [mode](data,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
                             stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,acc);
 
@@ -989,7 +989,7 @@ static void cr_exec_wait(
   }
   scatter_buf_to_user[mode](data,buf_old,vn,stage[k].scatter_map,dom,dstride,
                             stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
-                            stage[k].scatter_mapf,stage[k].queue,1,1,acc);
+                            stage[k].scatter_mapf,&stage[k].queue,1,1,acc);
   gather_buf_to_user [mode](data,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
                             stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,acc);
 }
@@ -1348,7 +1348,7 @@ static void allreduce_exec(
   scatter_to_buf[mode](buf,data,vn,ard->map_to_buf[transpose],dom,dstride,
                        ard->mt_nt[transpose],ard->map_to_buf_f[transpose],
 		       ard->mt_size[transpose],ard->map_to_buf_f[transpose],
-                       ard->queue[transpose],1,1,acc);
+                       &ard->queue[transpose],1,1,acc);
 
   /* all reduce */
 #pragma acc update host(buf[0:vn*unit_size*bufSize]) if(acc)
@@ -1359,7 +1359,7 @@ static void allreduce_exec(
   scatter_from_buf[mode](data,buf,vn,ard->map_from_buf[transpose],dom,dstride,
                          ard->mf_nt[transpose],ard->map_from_buf_f[transpose],
 			 ard->mf_size[transpose],ard->map_from_buf_f[transpose],
-                         ard->queue[transpose],1,1,acc);
+                         &ard->queue[transpose],1,1,acc);
 
 }
 
@@ -1584,7 +1584,7 @@ static void gs_aux(
   local_scatter[mode](u,u,vn,gsh->map_local[1^transpose],dom,gsh->dstride,
                       gsh->mf_nt[1^transpose],gsh->map_localf[1^transpose],
 		      gsh->m_size[1^transpose],gsh->map_local_e[1^transpose],
-                      gsh->queue[1^transpose],1,1,acc);
+                      &gsh->queue[1^transpose],1,1,acc);
 
 }
 
@@ -1675,7 +1675,7 @@ static void gs_aux_wait(
   local_scatter[mode](u,u,vn,gsh->map_local[1^transpose],dom,gsh->dstride,
                       gsh->mf_nt[1^transpose],gsh->map_localf[1^transpose],
 		      gsh->m_size[1^transpose],gsh->map_local_e[1^transpose],
-                      gsh->queue[1^transpose],1,1,acc);
+                      &gsh->queue[1^transpose],1,1,acc);
 
 }
 
@@ -1941,7 +1941,7 @@ void pw_send_queue_setup(const struct pw_comm_data *c,send_queue *queue)
   queue->buf_size = tmalloc(int,c->n);
   queue->queue = tmalloc(int,c->n);
   queue->buf_offset = tmalloc(int,c->n);
-  i=0;total_size=0;
+  i=0;total_size=0;k=0;
   for(p=c->p,pe=p+c->n;p!=pe;++p) {
     queue->buf_current[i] = 0;
     current_size = size[i];
@@ -1949,7 +1949,8 @@ void pw_send_queue_setup(const struct pw_comm_data *c,send_queue *queue)
     total_size+=current_size;
     queue->buf_size[i] = current_size;
     for(j=0;j<current_size;j++){
-      queue->map_to_buf[j] = i;
+      queue->map_to_buf[k] = i;
+      k++;
     }
     i++;
   }
