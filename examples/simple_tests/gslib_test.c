@@ -222,25 +222,27 @@ int main(int narg, char *arg[])
       fail = 1;
     }
   }
-  
   if(fail==0) printf("Add success! on %d\n",nid);
   //Fill v
 #pragma acc parallel loop present(v[0:localBufSpace],recvbuf[0:localBufSpace])
   for(i=0;i<localBufSpace;i++){
     v[i] = recvbuf[i];
   }
+  fflush(stdout);
+  MPI_Barrier(MPI_COMM_WORLD);
 
   /* printf("localBuf: %d\n",localBufSpace); */
   gs_irecv(v,dom,gs_mul,0,gsh,0);
-  for(i=0;i<localBufSpace;i++){
-    gs_isend(v,dom,gs_mul,0,gsh,0);
-  }
+  //  for(i=0;i<localBufSpace;i++){
+  gs_isend(v,dom,gs_mul,0,gsh,0);//,0,localBufSpace);
+    //  }
   gs_wait(v,dom,gs_mul,0,gsh,0);
   //gs(v,dom,gs_mul,0,gsh,0);
 
 #pragma acc update host(v[0:localBufSpace])
   fail = 0;
   MPI_Barrier(MPI_COMM_WORLD);
+
   //Check v
   for(i=0;i<localBufSpace;i++){
     if(v[i]!=pow(recvbuf[i],duplicate_count[recvbuf[i]])){

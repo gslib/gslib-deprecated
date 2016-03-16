@@ -41,6 +41,7 @@ GS_DEFINE_DOM_SIZES()
 void gs_flatmap_setup(const uint *map, int **mapf, int *mf_nt, int *m_size);
 static int map_size(const uint *map, int *t);
 
+
 typedef enum { mode_plain, mode_vec, mode_many,
                mode_dry_run, mode_ele } gs_mode;
 
@@ -49,13 +50,14 @@ static buffer static_buffer = null_buffer;
 static void gather_noop(
   void *out, const void *in, const unsigned vn,
   const uint *map, gs_dom dom, gs_op op, int dstride,
-  int mf_nt, int *mapf)
+  int mf_nt, int *mapf,int m_size,int acc)
 {}
 
 static void scatter_noop(
   void *out, const void *in, const unsigned vn,
   const uint *map, gs_dom dom, int dstride, int mf_nt,
-  int *mapf)
+  int *mapf,int m_size,int *map_e,send_queue queue,int start,
+  int count, int acc)
 {}
 
 static void init_noop(
@@ -418,17 +420,10 @@ struct pw_comm_data {
   uint *size;  /* size of message */
   uint total;  /* sum of message sizes */
 };
-struct pw_send_queue {
-  int* buf_current; /* current number packed in each buf*/
-  int* buf_size;
-  int queue_length; /*number of messages currently ready in queue*/
-  int* queue; /* list of buffers ready to send */
-  int* map_to_buf; /* takes a map index and returns a buffer number */
-};
 
 struct pw_data {
   struct pw_comm_data comm[2];
-  struct pw_send_queue queue[2];
+  send_queue queue[2];
   const uint *map[2];
   int *mapf[2];
   int *map_e[2];
@@ -476,6 +471,35 @@ static char *pw_exec_sends(char *buf, const unsigned unit_size,
   return buf;
 }
 
+static char *pw_exec_single_send(char *buf, const unsigned unit_size,
+                                  const struct comm *comm,
+                                  const struct pw_comm_data *c, comm_req *req,
+                                  int buf_number,int buf_offset)
+{
+  const uint *p, *p2,*pe, *size=c->size;
+  int i=0;
+  p2 = c->p;
+  p = c->p;
+#ifdef GPUDIRECT
+#pragma data present(buf)
+#endif
+  size_t len = (size[buf_number])*unit_size;
+#ifdef GPUDIRECT
+#pragma host_data use_device(buf)
+#endif
+  /* for(p=c->p,pe=p+c->n;p!=pe;++p) { */
+  /*   printf("p: %d p1: %d\n",*p,p2[i]); */
+  /*   printf("req1: %p %p\n",req+3,req); */
+  /*   i++; */
+  /* } */
+  p=c->p;
+  printf("req %d ,buf %d,p %d\n",req[buf_number],buf+buf_offset*unit_size,*p);
+  req+=buf_number;
+  comm_isend(req,comm,buf+buf_offset*unit_size,len,p[i],comm->id);
+
+  return buf;
+}
+
 static void pw_exec(
   void *data, gs_mode mode, unsigned vn, gs_dom dom, gs_op op,
   unsigned transpose, const void *execdata, const struct comm *comm, 
@@ -499,7 +523,8 @@ static void pw_exec(
   /* fill send buffer */
   //  printf("mode: %d\n",mode);
   scatter_to_buf[mode](sendbuf,data,vn,pwd->map[send],dom,dstride,pwd->mf_nt[send],
-                       pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],1,1,acc);
+                       pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],
+                       pwd->queue[send],1,1,acc);
 
   double* t = data;
 
@@ -546,10 +571,10 @@ static void pw_exec_irecv(
 
 static void pw_exec_isend(
   void *data, gs_mode mode, unsigned vn, gs_dom dom, gs_op op,
-  unsigned transpose, const void *execdata, const struct comm *comm, 
+  unsigned transpose, void *execdata, const struct comm *comm, 
   char *buf,int dstride,int acc,int bufSize,int start,int count)
 {
-  const struct pw_data *pwd = execdata;
+  struct pw_data *pwd = execdata;
   static gs_scatter_fun *const scatter_to_buf[] =
     { &gs_scatter, &gs_scatter_vec, &gs_scatter_many_to_vec, &scatter_noop, &gs_scatter_e };
   static gs_gather_fun *const gather_from_buf[] =
@@ -566,20 +591,32 @@ static void pw_exec_isend(
   sendbuf = buf+unit_size*pwd->comm[recv].total;
 
   scatter_to_buf[mode](sendbuf,data,vn,pwd->map[send],dom,dstride,pwd->mf_nt[send],
-                       pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],start,count,acc);
+                       pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],
+                       pwd->queue[send],start,count,acc);
 
   
 #pragma acc update host(sendbuf[0:unit_size*bufSize/2]) if(acc)
 
   /* post sends */
-  pw_exec_sends(sendbuf,unit_size,comm,&pwd->comm[send],
-                &pwd->req[pwd->comm[recv].n]);
-  /* i=0; //Where to get buf_send? */
-  /* while(pwd->buf_send[i]!=-1) { */
-  /*   pw_exec_single_send(pwd->req[pwd->comm[recv].n+i]); */
-  /*   i++; */
-  /* } */
-  /* if(pwd->buf_status==pwd->buf_fill_n) pw_exec_single_send(); */
+  /* pw_exec_sends(sendbuf,unit_size,comm,&pwd->comm[send], */
+  /*                &pwd->req[pwd->comm[recv].n]); */
+
+  //
+
+  for(i=0;i<pwd->queue[send].queue_length;i++) {
+    printf("queue: %d\n",pwd->queue[send].queue[i]);
+    pw_exec_single_send(sendbuf,unit_size,comm,&pwd->comm[send],
+                        &pwd->req[pwd->comm[recv].n],pwd->queue[send].queue[i],
+                        pwd->queue[send].buf_offset[i]);
+  }
+  printf("After scatter %d\n",pwd->queue[send].queue_length);
+  //Reset queue
+  for(i=0;i<pwd->queue[send].queue_length;i++) {
+    pwd->queue[send].queue[i] = 0;
+    //    pw_exec_single_send(pwd->req[pwd->comm[recv].n+i]);
+  }
+  pwd->queue[send].queue_length = 0;
+  printf("After scatter2 %d\n",pwd->queue[send].queue_length);
 }
 
 static void pw_exec_wait(
@@ -745,6 +782,7 @@ static void pw_setup(struct gs_remote *r, struct gs_topology *top,
 struct cr_stage {
   const uint *scatter_map, *gather_map;
   int *scatter_mapf, *gather_mapf;
+  send_queue queue;
   int s_nt,g_nt;
   int s_size,g_size;
   uint size_r, size_r1, size_r2;
@@ -798,12 +836,12 @@ static void cr_exec(
     if(k==0)
       scatter_user_to_buf[mode](sendbuf,data,vn,stage[0].scatter_map,dom,dstride,
                                 stage[0].s_nt,stage[0].scatter_mapf,stage[0].s_size,
-                                stage[0].scatter_mapf,1,1,acc);
+                                stage[0].scatter_mapf,stage[0].queue,1,1,acc);
     else
       //FIXME : fix map_e argument in this routine
       scatter_buf_to_buf[mode](sendbuf,buf_old,vn,stage[k].scatter_map,dom,dstride,
                                stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
-                               stage[k].scatter_mapf,1,1,acc),
+                               stage[k].scatter_mapf,stage[k].queue,1,1,acc),
         gather_buf_to_buf [mode](sendbuf,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
                                  stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,acc);
     //Need to update gather vec and scatter vec!
@@ -817,7 +855,8 @@ static void cr_exec(
   }
   scatter_buf_to_user[mode](data,buf_old,vn,stage[k].scatter_map,dom,dstride,
                             stage[k].s_nt,stage[k].scatter_mapf,
-                            stage[k].s_size,stage[k].scatter_mapf,1,1,acc);
+                            stage[k].s_size,stage[k].scatter_mapf,stage[k].queue,
+                            1,1,acc);
   gather_buf_to_user [mode](data,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
                             stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,acc);
 }
@@ -893,11 +932,11 @@ static void cr_exec_isend(
     if(k==0)
       scatter_user_to_buf[mode](sendbuf,data,vn,stage[0].scatter_map,dom,dstride,
                                 stage[0].s_nt,stage[0].scatter_mapf,stage[0].s_size,
-                                stage[0].scatter_mapf,1,1,acc);
+                                stage[0].scatter_mapf,stage[0].queue,1,1,acc);
     else
       scatter_buf_to_buf[mode](sendbuf,buf_old,vn,stage[k].scatter_map,dom,dstride,
                                stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
-                               stage[k].scatter_mapf,1,1,acc),
+                               stage[k].scatter_mapf,stage[k].queue,1,1,acc),
         gather_buf_to_buf [mode](sendbuf,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
                                  stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,acc);
     //Need to update gather vec and scatter vec!
@@ -909,7 +948,7 @@ static void cr_exec_isend(
   }
   scatter_buf_to_user[mode](data,buf_old,vn,stage[k].scatter_map,dom,dstride,
                             stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
-                            stage[k].scatter_mapf,1,1,acc);
+                            stage[k].scatter_mapf,stage[k].queue,1,1,acc);
   gather_buf_to_user [mode](data,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
                             stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,acc);
 
@@ -950,7 +989,7 @@ static void cr_exec_wait(
   }
   scatter_buf_to_user[mode](data,buf_old,vn,stage[k].scatter_map,dom,dstride,
                             stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
-                            stage[k].scatter_mapf,1,1,acc);
+                            stage[k].scatter_mapf,stage[k].queue,1,1,acc);
   gather_buf_to_user [mode](data,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
                             stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,acc);
 }
@@ -1280,6 +1319,7 @@ static void cr_setup(struct gs_remote *r, struct gs_topology *top,
 struct allreduce_data {
   const uint *map_to_buf[2], *map_from_buf[2];
   int *map_to_buf_f[2],*map_from_buf_f[2];
+  send_queue queue[2];
   int mt_nt[2],mf_nt[2];
   int mt_size[2],mf_size[2];
   uint buffer_size;
@@ -1308,7 +1348,7 @@ static void allreduce_exec(
   scatter_to_buf[mode](buf,data,vn,ard->map_to_buf[transpose],dom,dstride,
                        ard->mt_nt[transpose],ard->map_to_buf_f[transpose],
 		       ard->mt_size[transpose],ard->map_to_buf_f[transpose],
-                       1,1,acc);
+                       ard->queue[transpose],1,1,acc);
 
   /* all reduce */
 #pragma acc update host(buf[0:vn*unit_size*bufSize]) if(acc)
@@ -1319,7 +1359,7 @@ static void allreduce_exec(
   scatter_from_buf[mode](data,buf,vn,ard->map_from_buf[transpose],dom,dstride,
                          ard->mf_nt[transpose],ard->map_from_buf_f[transpose],
 			 ard->mf_size[transpose],ard->map_from_buf_f[transpose],
-                         1,1,acc);
+                         ard->queue[transpose],1,1,acc);
 
 }
 
@@ -1493,6 +1533,7 @@ struct gs_data {
   const uint *flagged_primaries;
   struct gs_remote r;
   int *map_localf[2];
+  send_queue queue[2];
   int *map_local_e[2];
   int *fp_mapf;
   int *fp_map_e;
@@ -1543,7 +1584,7 @@ static void gs_aux(
   local_scatter[mode](u,u,vn,gsh->map_local[1^transpose],dom,gsh->dstride,
                       gsh->mf_nt[1^transpose],gsh->map_localf[1^transpose],
 		      gsh->m_size[1^transpose],gsh->map_local_e[1^transpose],
-                      1,1,acc);
+                      gsh->queue[1^transpose],1,1,acc);
 
 }
 
@@ -1634,7 +1675,7 @@ static void gs_aux_wait(
   local_scatter[mode](u,u,vn,gsh->map_local[1^transpose],dom,gsh->dstride,
                       gsh->mf_nt[1^transpose],gsh->map_localf[1^transpose],
 		      gsh->m_size[1^transpose],gsh->map_local_e[1^transpose],
-                      1,1,acc);
+                      gsh->queue[1^transpose],1,1,acc);
 
 }
 
@@ -1889,25 +1930,30 @@ void gs_element_map_setup(const uint *map, int *mapf, int ***map_e,int data_size
 }
 
 
-void pw_send_queue_setup(const struct pw_comm_data *c,struct pw_send_queue *queue)
+void pw_send_queue_setup(const struct pw_comm_data *c,send_queue *queue)
 {
   const uint *p, *pe, *size=c->size;
   uint    i,j,k,current_size,num_bufs;
-  int     last_i;
+  int     last_i,total_size;
 
   queue->buf_current = tmalloc(int,c->n);
   queue->map_to_buf = tmalloc(int,c->total);
   queue->buf_size = tmalloc(int,c->n);
-  i=0;
+  queue->queue = tmalloc(int,c->n);
+  queue->buf_offset = tmalloc(int,c->n);
+  i=0;total_size=0;
   for(p=c->p,pe=p+c->n;p!=pe;++p) {
     queue->buf_current[i] = 0;
     current_size = size[i];
+    queue->buf_offset[i] = total_size;
+    total_size+=current_size;
     queue->buf_size[i] = current_size;
     for(j=0;j<current_size;j++){
       queue->map_to_buf[j] = i;
     }
     i++;
   }
+
 
   return;
 }
