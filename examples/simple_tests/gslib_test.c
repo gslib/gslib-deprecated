@@ -234,8 +234,8 @@ int main(int narg, char *arg[])
   /* printf("localBuf: %d\n",localBufSpace); */
   gs_irecv(v,dom,gs_mul,0,gsh,0);
   //  for(i=0;i<localBufSpace;i++){
-  gs_isend(v,dom,gs_mul,0,gsh,0);//,0,localBufSpace);
-    //  }
+  gs_isend_e(v,dom,gs_mul,0,gsh,0,0,localBufSpace);
+  //  }
   gs_wait(v,dom,gs_mul,0,gsh,0);
   //gs(v,dom,gs_mul,0,gsh,0);
 
