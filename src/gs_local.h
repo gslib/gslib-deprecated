@@ -32,7 +32,8 @@ typedef void gs_gather_fun(
 typedef void gs_scatter_fun(
   void *out, const void *in, const unsigned vn,
   const uint *map, gs_dom dom, int dstride, int mf_nt,
-  int *mapf, int m_size, int **mapg, int start, int count, int acc);
+  int *mapf, int m_size, int *mapg, send_queue queue,
+  int start, int count, int acc);
 typedef void gs_init_fun(
   void *out, const unsigned vn,
   const uint *map, gs_dom dom, gs_op op, int dstride, int mf_nt,
