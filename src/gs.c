@@ -493,7 +493,6 @@ static char *pw_exec_single_send(char *buf, const unsigned unit_size,
   /*   i++; */
   /* } */
   p=c->p;
-  printf("buf_number %d %d %d\n",buf_number,buf_offset,comm_gbl_id);
 
   comm_isend(req,comm,buf+buf_offset*unit_size,len,p[buf_number],comm->id);
 
@@ -589,7 +588,7 @@ static void pw_exec_isend(
   size=c->size;
 
   sendbuf = buf+unit_size*pwd->comm[recv].total;
-  printf("queuelength: %d\n",pwd->queue[send].queue_length);
+
   scatter_to_buf[mode](sendbuf,data,vn,pwd->map[send],dom,dstride,pwd->mf_nt[send],
                        pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],
                        &pwd->queue[send],start,count,acc);
@@ -602,21 +601,20 @@ static void pw_exec_isend(
   /*                &pwd->req[pwd->comm[recv].n]); */
 
   //
-  printf("queuelength: %d\n",pwd->queue[send].queue_length);
+
   for(i=0;i<pwd->queue[send].queue_length;i++) {
-    printf("queue loop: %d %d\n",pwd->queue[send].queue[i],pwd->queue[send].queue[i]);
     pw_exec_single_send(sendbuf,unit_size,comm,&pwd->comm[send],
                         &pwd->req[pwd->comm[recv].n+pwd->queue[send].queue[i]],
                         pwd->queue[send].queue[i],
                         pwd->queue[send].buf_offset[pwd->queue[send].queue[i]]);
   }
-  printf("After scatter %d\n",pwd->queue[send].queue_length);
+
   //Reset queue
   for(i=0;i<pwd->queue[send].queue_length;i++) {
     pwd->queue[send].queue[i] = 0;
   }
   pwd->queue[send].queue_length = 0;
-  printf("After scatter2 %d\n",pwd->queue[send].queue_length);
+
 }
 
 static void pw_exec_wait(
@@ -717,21 +715,21 @@ static struct pw_data *pw_setup_aux(struct array *sh, buffer *buf,
   
   /* default behavior: receive only remotely unflagged data */
   *mem_size+=pw_comm_setup(&pwd->comm[0],sh, FLAGS_REMOTE, buf);
-  pw_send_queue_setup(&pwd->comm[0],&pwd->queue[0]);
+
   pwd->map[0] = pw_map_setup(sh, buf, mem_size);
   /* Get flattened map */
   gs_flatmap_setup(pwd->map[0],&(pwd->mapf[0]),&(pwd->mf_nt[0]),&(pwd->mf_size[0]));
-
+  pw_send_queue_setup(&pwd->comm[0],&pwd->queue[0],pwd->map[0],pwd->mapf[0],pwd->mf_nt[0]);
   /* Get element map */
   gs_element_map_setup(pwd->map[0],pwd->mapf[0],&(pwd->map_e[0]),data_size);
 
   /* default behavior: send only locally unflagged data */
   *mem_size+=pw_comm_setup(&pwd->comm[1],sh, FLAGS_LOCAL, buf);
-  pw_send_queue_setup(&pwd->comm[1],&pwd->queue[1]);
   pwd->map[1] = pw_map_setup(sh, buf, mem_size);
 
   /* Get flattened map */
   gs_flatmap_setup(pwd->map[1],&(pwd->mapf[1]),&(pwd->mf_nt[1]),&(pwd->mf_size[1]));
+  pw_send_queue_setup(&pwd->comm[1],&pwd->queue[1],pwd->map[1],pwd->mapf[1],pwd->mf_nt[1]);
   
   /* Get element map */
   gs_element_map_setup(pwd->map[1],pwd->mapf[1],&(pwd->map_e[1]),data_size);
@@ -1930,11 +1928,11 @@ void gs_element_map_setup(const uint *map, int *mapf, int ***map_e,int data_size
 }
 
 
-void pw_send_queue_setup(const struct pw_comm_data *c,send_queue *queue)
+void pw_send_queue_setup(const struct pw_comm_data *c,send_queue *queue,int *map,int *mapf,int mf_nt)
 {
   const uint *p, *pe, *size=c->size;
   uint    i,j,k,current_size,num_bufs;
-  int     last_i,total_size;
+  int     total_size,total_num;
 
   queue->buf_current = tmalloc(int,c->n);
   queue->map_to_buf = tmalloc(int,c->total);
@@ -1948,13 +1946,21 @@ void pw_send_queue_setup(const struct pw_comm_data *c,send_queue *queue)
     queue->buf_offset[i] = total_size;
     total_size+=current_size;
     queue->buf_size[i] = current_size;
-    for(j=0;j<current_size;j++){
-      queue->map_to_buf[k] = i;
-      k++;
-    }
     i++;
   }
+  total_num = i;
 
+  for(k=0;k<mf_nt;k++) {                                         
+      for(j=0;j<mapf[k*2+1];j++) {
+        //Search for which buf this belongs in
+        for(i=0;i<total_num;i++){
+          if(map[mapf[k*2]+j+1] < queue->buf_offset[i]) {
+            break;
+          }
+        }
+        queue->map_to_buf[map[mapf[k*2]+j+1]] = i-1;
+      }                                                            
+  }
 
   return;
 }
