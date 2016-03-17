@@ -195,7 +195,7 @@ int main(int narg, char *arg[])
   }
 
   gsh = gs_setup(recvbuf,localBufSpace,&comm,0,gs_pairwise,1);
-  printf("after setup, nid: %d\n",nid);
+
 #pragma acc enter data create(v[0:localBufSpace])
 #pragma acc enter data copyin(recvbuf[0:localBufSpace])
 
@@ -222,7 +222,7 @@ int main(int narg, char *arg[])
       fail = 1;
     }
   }
-  if(fail==0) printf("Add success! on %d\n",nid);
+  //  if(fail==0) printf("Add success! on %d\n",nid);
   //Fill v
 #pragma acc parallel loop present(v[0:localBufSpace],recvbuf[0:localBufSpace])
   for(i=0;i<localBufSpace;i++){
@@ -231,11 +231,11 @@ int main(int narg, char *arg[])
   fflush(stdout);
   MPI_Barrier(MPI_COMM_WORLD);
 
-  /* printf("localBuf: %d\n",localBufSpace); */
+
   gs_irecv(v,dom,gs_mul,0,gsh,0);
-  //  for(i=0;i<localBufSpace;i++){
-  gs_isend_e(v,dom,gs_mul,0,gsh,0,0,localBufSpace);
-  //  }
+  for(i=0;i<localBufSpace/4;i++){
+    gs_isend_e(v,dom,gs_mul,0,gsh,0,i*4,4);
+  }
   gs_wait(v,dom,gs_mul,0,gsh,0);
   //gs(v,dom,gs_mul,0,gsh,0);
 
@@ -252,8 +252,8 @@ int main(int narg, char *arg[])
     }
   }
   
-  if(fail==0) printf("Mult success! on %d\n",nid);
-
+  //  if(fail==0) printf("Mult success! on %d\n",nid);
+  if(nid==0) printf("If there were no error messages, both mult and add succeeded!\n");
   comm_free(&comm);
   if(nid==0){
     for(i=0;i<np;i++) free(mat[i]);

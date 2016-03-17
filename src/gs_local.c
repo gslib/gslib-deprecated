@@ -225,7 +225,6 @@ _Pragma("acc parallel loop gang vector present(map[0:m_size],in,mapf[0:2*mf_nt],
             index = out_stride*map[mapf[map_e[i][0]]+j+1]+k*dstride_out;\
               out[index] = t;\
               queue->buf_current[queue->map_to_buf[index]]++;\
-              printf("queue inner: %d %d %d\n",queue->buf_current[queue->map_to_buf[index]],queue->buf_size[queue->map_to_buf[index]],queue->map_to_buf[index]); \
               if(queue->buf_current[queue->map_to_buf[index]]==queue->buf_size[queue->map_to_buf[index]]){ \
                 queue->queue[l] = queue->map_to_buf[index];               \
                 l++;\
