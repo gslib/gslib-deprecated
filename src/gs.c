@@ -26,6 +26,7 @@
 #define gs_vec           PREFIXED_NAME(gs_vec   )
 #define gs_irecv         PREFIXED_NAME(gs_irecv )
 #define gs_isend         PREFIXED_NAME(gs_isend )
+#define gs_isend_e       PREFIXED_NAME(gs_isend_e )
 #define gs_wait          PREFIXED_NAME(gs_wait  )
 #define gs_many          PREFIXED_NAME(gs_many  )
 #define gs_many_isend    PREFIXED_NAME(gs_many_isend  )
@@ -2003,6 +2004,7 @@ static int map_size(const uint *map, int *t)
 #undef gs_op
 #undef gs_irecv
 #undef gs_isend
+#undef gs_isend_e
 #undef gs_wait
 #undef gs_free
 #undef gs_setup
@@ -2015,6 +2017,7 @@ static int map_size(const uint *map, int *t)
 #define cgs             PREFIXED_NAME(gs      )
 #define cgs_irecv       PREFIXED_NAME(gs_irecv)
 #define cgs_isend       PREFIXED_NAME(gs_isend)
+#define cgs_isend_e     PREFIXED_NAME(gs_isend_e)
 #define cgs_wait        PREFIXED_NAME(gs_wait )
 #define cgs_vec         PREFIXED_NAME(gs_vec  )
 #define cgs_many        PREFIXED_NAME(gs_many )
@@ -2029,6 +2032,7 @@ static int map_size(const uint *map, int *t)
 #define fgs               FORTRAN_NAME(gs_op               ,GS_OP        )
 #define fgs_irecv         FORTRAN_NAME(gs_op_irecv         ,GS_OP_IRECV  )
 #define fgs_isend         FORTRAN_NAME(gs_op_isend         ,GS_OP_ISEND  )
+#define fgs_isend_e       FORTRAN_NAME(gs_op_isend_e       ,GS_OP_ISEND_E)
 #define fgs_wait          FORTRAN_NAME(gs_op_wait          ,GS_OP_WAIT   )
 #define fgs_vec           FORTRAN_NAME(gs_op_vec           ,GS_OP_VEC    )
 #define fgs_many          FORTRAN_NAME(gs_op_many          ,GS_OP_MANY   )
@@ -2140,6 +2144,15 @@ void fgs_isend(const sint *handle, void *u, const sint *dom, const sint *op,
   fgs_check_parms(*handle,*dom,*op,"gs_op",__LINE__);
 
   cgs_isend(u,fgs_dom[*dom],(gs_op_t)(*op-1),*transpose!=0,fgs_info[*handle],0);
+
+}
+
+void fgs_isend_e(const sint *handle, void *u, const sint *dom, const sint *op,
+                 const sint *transpose,int start,int count)
+{
+  fgs_check_parms(*handle,*dom,*op,"gs_op",__LINE__);
+
+  cgs_isend_e(u,fgs_dom[*dom],(gs_op_t)(*op-1),*transpose!=0,fgs_info[*handle],0,start,count);
 
 }
 

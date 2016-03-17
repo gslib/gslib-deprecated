@@ -119,6 +119,7 @@
 #define gs               PREFIXED_NAME(gs       )
 #define gs_irecv         PREFIXED_NAME(gs_irecv )
 #define gs_isend         PREFIXED_NAME(gs_isend )
+#define gs_isend_e       PREFIXED_NAME(gs_isend_e )
 #define gs_wait          PREFIXED_NAME(gs_wait  )
 #define gs_vec           PREFIXED_NAME(gs_vec   )
 #define gs_many          PREFIXED_NAME(gs_many  )
@@ -140,6 +141,9 @@ void gs_irecv(void *u, gs_dom dom, gs_op op, unsigned transpose,
 
 void gs_isend(void *u, gs_dom dom, gs_op op, unsigned transpose,
         struct gs_data *gsh, buffer *buf);
+
+void gs_isend_e(void *u, gs_dom dom, gs_op op, unsigned transpose,
+                struct gs_data *gsh, buffer *buf,int start, int count);
 
 void gs_wait(void *u, gs_dom dom, gs_op op, unsigned transpose,
         struct gs_data *gsh, buffer *buf);
