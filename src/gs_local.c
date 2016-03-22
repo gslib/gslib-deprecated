@@ -123,7 +123,7 @@ _Pragma("acc parallel loop gang vector present(map[0:m_size],mapf[0:2*mf_nt],out
     for(i=0;i<mf_nt;i++){\
 _Pragma("acc loop seq")\
       for(j=0;j<mapf[i*2+1];j++) {\
-        out[map[mapf[i*2+1]]+k*dstride] = e;\
+        out[map[mapf[i*2+1]]+k*dstride] = e;    \
       }\
     }\
   }\

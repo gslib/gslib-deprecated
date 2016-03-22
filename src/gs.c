@@ -1797,8 +1797,9 @@ static void gs_setup_aux(struct gs_data *gsh, const slong *id, uint n,
   if(unique) make_topology_unique(&top,0,gsh->comm.id,&cr.data);
 
   gsh->handle_size = sizeof(struct gs_data);
-  gsh->handle_size += local_setup(gsh,&top.nz);
   gsh->dstride = (int)n;
+  gsh->handle_size += local_setup(gsh,&top.nz);
+
   if(verbose && gsh->comm.id==0)
     printf("gs_setup: %ld unique labels shared\n",(long)top.total_shared);
 
