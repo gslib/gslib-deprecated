@@ -1221,11 +1221,9 @@ struct gs_data {
   const uint *flagged_primaries;
   struct gs_remote r;
   int *map_localf[2];
-  int *fp_mapf;
   int m_size[2];
   int fp_size;
   int mf_nt[2];
-  int fp_m_nt; // nt means number of terminators
   int dstride;
   int u_size;
   uint handle_size;
@@ -1264,7 +1262,7 @@ static void gs_aux(
 		      gsh->m_size[0^transpose],acc);
 
   if(transpose==0) init[mode](u,vn,gsh->flagged_primaries,dom,op,gsh->dstride,
-			      gsh->fp_m_nt,gsh->fp_mapf,gsh->fp_size,acc);
+                              gsh->fp_size,acc);
 
   //  printf("before exec: buf->ptr %p-%p\n",buf->ptr,buf->ptr+vn*gs_dom_size[dom]*gsh->r.buffer_size);
   //  printf("mode gs: %d\n",mode);
@@ -1302,6 +1300,7 @@ typedef enum {gs_auto, gs_pairwise, gs_crystal_router, gs_all_reduce} gs_method;
 static uint local_setup(struct gs_data *gsh, const struct array *nz)
 {
   uint mem_size = 0,s=0,i;
+  int mf_temp;
   char hname[1024];
 
   //  gethostname(hname, sizeof(hname));
@@ -1320,7 +1319,8 @@ static uint local_setup(struct gs_data *gsh, const struct array *nz)
   //fprintf(stderr,"%s: t_map[0:%d]   -> %lX : %lX\n",hname,s/4,gsh->map_local[1],((void*)gsh->map_local[1])+s);
   s = 0;
   gsh->flagged_primaries = flagged_primaries_map(nz, &s);
-  gs_flatmap_setup(gsh->flagged_primaries,&(gsh->fp_mapf),&(gsh->fp_m_nt),&(gsh->fp_size));
+  gsh->fp_size = map_size(gsh->flagged_primaries,&mf_temp) - 1;  
+
   mem_size += s;
   //fprintf(stderr,"%s: fp_map[0:%d]  -> %lX : %lX\n",hname,s/4,gsh->flagged_primaries,((void*)gsh->flagged_primaries)+s);
 
