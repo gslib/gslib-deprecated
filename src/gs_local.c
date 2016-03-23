@@ -114,18 +114,16 @@ _Pragma("acc wait")						   \
   The basic initialization kernel
 ------------------------------------------------------------------------------*/
 #define DEFINE_INIT(T) \
-  static void init_##T(T *restrict out, const uint *restrict map, gs_op op,int dstride,int mf_nt,\
-		       int *mapf, int vn, int m_size, int acc)			\
+  static void init_##T(T *restrict out, const uint *restrict map, gs_op op,int dstride,\
+		       int vn, int m_size, int acc)			\
 {                                                       \
   uint i,j,k; const T e = gs_identity_##T[op];		\
   for(k=0;k<vn;++k) {\
 _Pragma("acc parallel loop gang vector present(map[0:m_size],mapf[0:2*mf_nt],out) async(k+1) if(acc)")\
-    for(i=0;i<mf_nt;i++){\
-_Pragma("acc loop seq")\
-      for(j=0;j<mapf[i*2+1];j++) {\
-        out[map[mapf[i*2+1]]+k*dstride] = e;    \
-      }\
-    }\
+    for(i=0;i<m_size;i++){\
+      _Pragma("acc loop seq")                   \
+        out[map[i]+k*dstride] = e;              \
+    }                                           \
   }\
 _Pragma("acc wait")\
 }
@@ -306,10 +304,10 @@ void gs_scatter(void *out, const void *in, const unsigned vn,
 }
 
 void gs_init(void *out, const unsigned vn, const uint *map,
-             gs_dom dom, gs_op op,int dstride, int mf_nt, 
-	     int *mapf, int m_size, int acc)
+             gs_dom dom, gs_op op,int dstride,  
+	     int m_size, int acc)
 {
-#define WITH_DOMAIN(T) init_##T(out,map,op,dstride,mf_nt,mapf,vn,m_size,acc)
+#define WITH_DOMAIN(T) init_##T(out,map,op,dstride,vn,m_size,acc)
   SWITCH_DOMAIN(dom);
 #undef  WITH_DOMAIN
 }
@@ -381,7 +379,7 @@ void gs_init_many(void *out, const unsigned vn, const uint *map,
                   gs_dom dom, gs_op op,int dstride, int mf_nt,
 		  int *mapf, int m_size, int acc)
 {
-#define WITH_DOMAIN(T) init_##T(out,map,op,dstride,mf_nt,mapf,vn,m_size,acc)
+#define WITH_DOMAIN(T) init_##T(out,map,op,dstride,vn,m_size,acc)
   SWITCH_DOMAIN(dom);
 #undef  WITH_DOMAIN
 }

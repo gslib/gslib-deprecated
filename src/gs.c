@@ -41,8 +41,7 @@ GS_DEFINE_DOM_SIZES()
 /* Function prototypes */
 void gs_flatmap_setup(const uint *map, int **mapf, int *mf_nt, int *m_size);
 static int map_size(const uint *map, int *t);
-
-
+static int fp_map_size(const uint *map);
 typedef enum { mode_plain, mode_vec, mode_many,
                mode_dry_run, mode_ele } gs_mode;
 
@@ -1534,12 +1533,10 @@ struct gs_data {
   int *map_localf[2];
   send_queue queue[2];
   int *map_local_e[2];
-  int *fp_mapf;
   int *fp_map_e;
   int m_size[2];
   int fp_size;
   int mf_nt[2];
-  int fp_m_nt; // nt means number of terminators
   int dstride;
   int u_size;
   uint handle_size;
@@ -1575,7 +1572,7 @@ static void gs_aux(
 		      gsh->m_size[0^transpose],acc);
 
   if(transpose==0) init[mode](u,vn,gsh->flagged_primaries,dom,op,gsh->dstride,
-			      gsh->fp_m_nt,gsh->fp_mapf,gsh->fp_size,acc);
+                              gsh->fp_size,acc);
 
 
   gsh->r.exec(u,mode,vn,dom,op,transpose,gsh->r.data,&gsh->comm,buf->ptr,gsh->dstride,acc,gsh->r.buffer_size,0,0);
@@ -1750,6 +1747,7 @@ typedef enum {gs_auto, gs_pairwise, gs_crystal_router, gs_all_reduce} gs_method;
 static uint local_setup(struct gs_data *gsh, const struct array *nz)
 {
   uint mem_size = 0,s=0,i;
+  int mf_temp;
   char hname[1024];
 
   //  gethostname(hname, sizeof(hname));
@@ -1773,7 +1771,8 @@ static uint local_setup(struct gs_data *gsh, const struct array *nz)
   //fprintf(stderr,"%s: t_map[0:%d]   -> %lX : %lX\n",hname,s/4,gsh->map_local[1],((void*)gsh->map_local[1])+s);
   s = 0;
   gsh->flagged_primaries = flagged_primaries_map(nz, &s);
-  gs_flatmap_setup(gsh->flagged_primaries,&(gsh->fp_mapf),&(gsh->fp_m_nt),&(gsh->fp_size));
+  //gs_flatmap_setup(gsh->flagged_primaries,&(gsh->fp_mapf),&(gsh->fp_m_nt),&(gsh->fp_size));
+  gsh->fp_size = fp_map_size(gsh->flagged_primaries);  
   /* Get element map */
   gs_element_map_setup(gsh->flagged_primaries,gsh->fp_mapf,&(gsh->fp_map_e),gsh->dstride);
 
@@ -1994,6 +1993,28 @@ static int map_size(const uint *map, int *t)
   }
   (*t)--;
 
+  return i;
+}
+
+static int fp_map_size(const uint *map)
+{
+  int i,ct=0;
+
+  // No map
+  if(!map) {
+    return 0;
+  }
+  
+  // "Empty" map (contains only a single -1 terminator)
+  if(map[0] == -1) {
+    return 0;
+  }
+
+  i=0;
+  // "Regular" map (contains two -1's as termination)
+  while(map[i]!=-1){
+    i++;
+  }
   return i;
 }
 
