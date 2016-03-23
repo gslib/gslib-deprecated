@@ -33,7 +33,7 @@ GS_DEFINE_DOM_SIZES()
 /* Function prototypes */
 void gs_flatmap_setup(const uint *map, int **mapf, int *mf_nt, int *m_size);
 static int map_size(const uint *map, int *t);
-
+static int fp_map_size(const uint *map);
 typedef enum { mode_plain, mode_vec, mode_many,
                mode_dry_run } gs_mode;
 
@@ -1319,8 +1319,7 @@ static uint local_setup(struct gs_data *gsh, const struct array *nz)
   //fprintf(stderr,"%s: t_map[0:%d]   -> %lX : %lX\n",hname,s/4,gsh->map_local[1],((void*)gsh->map_local[1])+s);
   s = 0;
   gsh->flagged_primaries = flagged_primaries_map(nz, &s);
-  gsh->fp_size = map_size(gsh->flagged_primaries,&mf_temp) - 1;  
-
+  gsh->fp_size = fp_map_size(gsh->flagged_primaries);  
   mem_size += s;
   //fprintf(stderr,"%s: fp_map[0:%d]  -> %lX : %lX\n",hname,s/4,gsh->flagged_primaries,((void*)gsh->flagged_primaries)+s);
 
@@ -1454,6 +1453,28 @@ static int map_size(const uint *map, int *t)
   }
   (*t)--;
 
+  return i;
+}
+
+static int fp_map_size(const uint *map)
+{
+  int i,ct=0;
+
+  // No map
+  if(!map) {
+    return 0;
+  }
+  
+  // "Empty" map (contains only a single -1 terminator)
+  if(map[0] == -1) {
+    return 0;
+  }
+
+  i=0;
+  // "Regular" map (contains two -1's as termination)
+  while(map[i]!=-1){
+    i++;
+  }
   return i;
 }
 
