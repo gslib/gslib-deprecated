@@ -1533,7 +1533,6 @@ struct gs_data {
   int *map_localf[2];
   send_queue queue[2];
   int *map_local_e[2];
-  int *fp_map_e;
   int m_size[2];
   int fp_size;
   int mf_nt[2];
@@ -1615,7 +1614,7 @@ static void gs_aux_irecv(
 		      gsh->m_size[0^transpose],acc);
 
   if(transpose==0) init[mode](u,vn,gsh->flagged_primaries,dom,op,gsh->dstride,
-			      gsh->fp_m_nt,gsh->fp_mapf,gsh->fp_size,acc);
+			      gsh->fp_size,acc);
 
   gsh->r.exec_irecv(u,mode,vn,dom,op,transpose,gsh->r.data,&gsh->comm,buf->ptr,gsh->dstride,acc,gsh->r.buffer_size,0,0);
 }
@@ -1774,7 +1773,7 @@ static uint local_setup(struct gs_data *gsh, const struct array *nz)
   //gs_flatmap_setup(gsh->flagged_primaries,&(gsh->fp_mapf),&(gsh->fp_m_nt),&(gsh->fp_size));
   gsh->fp_size = fp_map_size(gsh->flagged_primaries);  
   /* Get element map */
-  gs_element_map_setup(gsh->flagged_primaries,gsh->fp_mapf,&(gsh->fp_map_e),gsh->dstride);
+  //  gs_element_map_setup(gsh->flagged_primaries,gsh->fp_mapf,&(gsh->fp_map_e),gsh->dstride);
 
   mem_size += s;
   //fprintf(stderr,"%s: fp_map[0:%d]  -> %lX : %lX\n",hname,s/4,gsh->flagged_primaries,((void*)gsh->flagged_primaries)+s);
