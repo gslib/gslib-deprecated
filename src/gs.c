@@ -2169,11 +2169,11 @@ void fgs_isend(const sint *handle, void *u, const sint *dom, const sint *op,
 }
 
 void fgs_isend_e(const sint *handle, void *u, const sint *dom, const sint *op,
-                 const sint *transpose,int start,int count)
+                 const sint *transpose,const sint *start,const sint *count)
 {
   fgs_check_parms(*handle,*dom,*op,"gs_op",__LINE__);
 
-  cgs_isend_e(u,fgs_dom[*dom],(gs_op_t)(*op-1),*transpose!=0,fgs_info[*handle],0,start,count);
+  cgs_isend_e(u,fgs_dom[*dom],(gs_op_t)(*op-1),*transpose!=0,fgs_info[*handle],0,*start,*count);
 
 }
 
