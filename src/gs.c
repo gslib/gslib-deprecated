@@ -640,6 +640,13 @@ static void pw_exec_wait(
   /* gather using recv buffer */
   gather_from_buf[mode](data,buf,vn,pwd->map[recv],dom,op,dstride,pwd->mf_nt[recv],
                         pwd->mapf[recv],pwd->mf_size[recv],acc);
+  //Reset buf_current
+  for(i=0;i<pwd->comm[0].n;i++){
+    pwd->queue[0].buf_current[i] = 0;
+  }
+  for(i=0;i<pwd->comm[1].n;i++){
+    pwd->queue[1].buf_current[i] = 0;
+  }
 }
 
 
@@ -1692,7 +1699,7 @@ void gs_irecv(void *u, gs_dom dom, gs_op op, unsigned transpose,
 void gs_isend(void *u, gs_dom dom, gs_op op, unsigned transpose,
               struct gs_data *gsh, buffer *buf)
 {
-  gs_aux_isend(u,mode_plain,1,dom,op,transpose,gsh,buf,0,0);
+  gs_aux_isend(u,mode_ele,1,dom,op,transpose,gsh,buf,0,gsh->dstride);
 }
 
 void gs_isend_e(void *u, gs_dom dom, gs_op op, unsigned transpose,
@@ -1950,7 +1957,7 @@ void pw_send_queue_setup(const struct pw_comm_data *c,send_queue *queue,int *map
   }
   total_num = i;
 
-  for(k=0;k<mf_nt;k++) {                                         
+  for(k=0;k<mf_nt;k++) {
       for(j=0;j<mapf[k*2+1];j++) {
         //Search for which buf this belongs in
         for(i=0;i<total_num;i++){
@@ -1959,7 +1966,7 @@ void pw_send_queue_setup(const struct pw_comm_data *c,send_queue *queue,int *map
           }
         }
         queue->map_to_buf[map[mapf[k*2]+j+1]] = i-1;
-      }                                                            
+      }
   }
 
   return;
