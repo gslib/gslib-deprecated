@@ -119,7 +119,7 @@ _Pragma("acc wait")						   \
 {                                                       \
   uint i,j,k; const T e = gs_identity_##T[op];		\
   for(k=0;k<vn;++k) {\
-_Pragma("acc parallel loop gang vector present(map[0:m_size],mapf[0:2*mf_nt],out) async(k+1) if(acc)")\
+_Pragma("acc parallel loop gang vector present(map[0:m_size],out) async(k+1) if(acc)")\
     for(i=0;i<m_size;i++){\
       _Pragma("acc loop seq")                   \
         out[map[i]+k*dstride] = e;              \
@@ -237,13 +237,70 @@ _Pragma("acc wait")                                                   \
   queue->queue_length = l;\
 }
 
-#define DEFINE_PROCS(T) \
-  DEFINE_SCATTER(T)
+/*------------------------------------------------------------------------------
+  The elemental gather kernel
+------------------------------------------------------------------------------*/
+#define DEFINE_GATHER(T,OP)   \
+static void gather_e_##T##_##OP( \
+  T *restrict out, const T *restrict in, const unsigned in_stride,           \
+  const uint *restrict map, int dstride, int mf_nt, int *mapf, \
+  int vn, int m_size, const unit **map_e,int start, int count,int acc)  \
+{                                                                            \
+  uint i,j,k;      \
+  int dstride_in=1; \
+  if(in_stride==1) dstride_in=dstride; \
+  for(k=0;k<vn;++k) {                                                   \
+    _Pragma("acc parallel loop gang vector present(out,in,mapf[0:2*mf_nt],map[0:m_size]) async(k+1) if(acc)") \
+    for(i=start;i<start_count;i++) {                                  \
+      if(map_e[i][0]!=-1){                                              \
+        T t=out[map[mapf[map_e[i][0]]]+k*dstride];                      \
+_Pragma("acc loop seq")                                         \
+        for(j=0;j<mapf[map_e[i][0]+1];j++) {                                  \
+          GS_DO_##OP(t,in[in_stride*map[mapf[map_e[i][0]]+j+1]+k*dstride_in]); \
+        }                                                               \
+        out[map[mapf[map_e[i][0]]]+k*dstride] = t;                             \
+      } else {                                                          \
+        i=map_e[i][1]-1;                                                \
+      }                                                                 \
+    }                                                                   \
+  }                                                                     \
+  _Pragma("acc wait")							\
+}
+
+/*------------------------------------------------------------------------------
+  The elemental initialization kernel
+------------------------------------------------------------------------------*/
+#define DEFINE_INIT(T) \
+  static void init_e_##T(T *restrict out, const uint *restrict map, gs_op op,int dstride,\
+                         int vn, int m_size,const uint **map_e, int start, int count,int acc) \
+{                                                       \
+  uint i,j,k; const T e = gs_identity_##T[op];		\
+  for(k=0;k<vn;++k) {\
+_Pragma("acc parallel loop gang vector present(map[0:m_size],out) async(k+1) if(acc)")\
+    for(i=start;i<start+count;i++){\
+      if(map_e[i][0]!=-1){                      \
+_Pragma("acc loop seq")                   \
+        out[map[map_e[i][0]]+k*dstride] = e;              \
+      } else {                                            \
+        i=map_e[i][1]-1;                                  \
+      }                                                   \      
+    }                                           \
+  }\
+_Pragma("acc wait")\
+}
+
+
+#define DEFINE_PROCS(T,OP)                        \
+  GS_FOR_EACH_OP(T,DEFINE_GATHER) \
+  DEFINE_SCATTER(T) \
+  DEFINE_INIT(T)
 
 GS_FOR_EACH_DOMAIN(DEFINE_PROCS)
 
+#undef DEFINE_INIT
 #undef DEFINE_PROCS
 #undef DEFINE_SCATTER
+#undef DEFINE_GATHER
 
 
 #undef DO_bpr
@@ -315,6 +372,18 @@ void gs_init(void *out, const unsigned vn, const uint *map,
 /*------------------------------------------------------------------------------
   Elemental plain kernels; vn parameter ignored but present for consistent signatures
 ------------------------------------------------------------------------------*/
+void gs_gather_e(void *out, const void *in, const unsigned vn,
+               const uint *map, gs_dom dom, gs_op op, int dstride,
+               int mf_nt, int *mapf, int m_size,const uint **map_e,
+               int start, int count,int acc)
+{
+#define WITH_OP(T,OP) gather_e_##T##_##OP(out,in,1,map,dstride,mf_nt,mapf,vn,m_size,acc)
+#define WITH_DOMAIN(T) SWITCH_OP(T,op)
+  SWITCH_DOMAIN(dom);
+#undef  WITH_DOMAIN
+#undef  WITH_OP
+}
+
 
 void gs_scatter_e(void *out, const void *in, const unsigned vn,
                 const uint *map, gs_dom dom,int dstride, int mf_nt, 
