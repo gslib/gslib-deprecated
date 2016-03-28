@@ -50,7 +50,8 @@ static buffer static_buffer = null_buffer;
 static void gather_noop(
   void *out, const void *in, const unsigned vn,
   const uint *map, gs_dom dom, gs_op op, int dstride,
-  int mf_nt, int *mapf,int m_size,int acc)
+  int mf_nt, int *mapf,int m_size,int **map_e,int start,
+  int count,int acc)
 {}
 
 static void scatter_noop(
@@ -540,7 +541,8 @@ static void pw_exec(
 
   /* gather using recv buffer */
   gather_from_buf[mode](data,buf,vn,pwd->map[recv],dom,op,dstride,pwd->mf_nt[recv],
-                        pwd->mapf[recv],pwd->mf_size[recv],acc);
+                        pwd->mapf[recv],pwd->mf_size[recv],pwd->map_e[recv],
+                        start,count,acc);
 }
 
 /*------------------------------------------------------------------------------
@@ -639,7 +641,8 @@ static void pw_exec_wait(
 
   /* gather using recv buffer */
   gather_from_buf[mode](data,buf,vn,pwd->map[recv],dom,op,dstride,pwd->mf_nt[recv],
-                        pwd->mapf[recv],pwd->mf_size[recv],acc);
+                        pwd->mapf[recv],pwd->mf_size[recv],pwd->map_e[recv],
+                        start,count,acc);
   //Reset buf_current
   for(i=0;i<pwd->comm[0].n;i++){
     pwd->queue[0].buf_current[i] = 0;
@@ -848,7 +851,8 @@ static void cr_exec(
                                stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
                                stage[k].scatter_mapf,&stage[k].queue,1,1,acc),
         gather_buf_to_buf [mode](sendbuf,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
-                                 stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,acc);
+                                 stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,
+                                 stage[k].gather_mapf,1,1,acc);
     //Need to update gather vec and scatter vec!
 #pragma acc update host(buf[0:unit_size*bufSize]) if(acc)
     comm_isend(&req[0],comm,sendbuf,unit_size*stage[k].size_s,
@@ -863,7 +867,8 @@ static void cr_exec(
                             stage[k].s_size,stage[k].scatter_mapf,&stage[k].queue,
                             1,1,acc);
   gather_buf_to_user [mode](data,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
-                            stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,acc);
+                            stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,
+                            stage[k].gather_mapf,1,1,acc);
 }
 
 /*------------------------------------------------------------------------------
@@ -943,7 +948,8 @@ static void cr_exec_isend(
                                stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
                                stage[k].scatter_mapf,&stage[k].queue,1,1,acc),
         gather_buf_to_buf [mode](sendbuf,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
-                                 stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,acc);
+                                 stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,
+                                 stage[k].gather_mapf,1,1,acc);
     //Need to update gather vec and scatter vec!
 #pragma acc update host(buf[0:unit_size*bufSize]) if(acc)
     
@@ -955,7 +961,8 @@ static void cr_exec_isend(
                             stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
                             stage[k].scatter_mapf,&stage[k].queue,1,1,acc);
   gather_buf_to_user [mode](data,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
-                            stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,acc);
+                            stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,
+                            stage[k].gather_mapf,start,count,acc);
 
 }
 
@@ -996,7 +1003,8 @@ static void cr_exec_wait(
                             stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
                             stage[k].scatter_mapf,&stage[k].queue,1,1,acc);
   gather_buf_to_user [mode](data,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
-                            stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,acc);
+                            stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,
+                            stage[k].gather_mapf,1,1,acc);
 }
 
 /*------------------------------------------------------------------------------
@@ -1532,7 +1540,8 @@ void print_acc_int(int *a,int n){
 /*------------------------------------------------------------------------------
   Main Execution
 ------------------------------------------------------------------------------*/
-struct gs_data {
+struct 
+gs_data {
   struct comm comm;
   const uint *map_local[2]; /* 0=unflagged, 1=all */
   const uint *flagged_primaries;
@@ -1541,7 +1550,7 @@ struct gs_data {
   send_queue queue[2];
   int *map_local_e[2];
   int m_size[2];
-  int *fp_map_local_e[2];
+  int **fp_map_e;
   int fp_size;
   int mf_nt[2];
   int dstride;
@@ -1576,10 +1585,11 @@ static void gs_aux(
 #endif
   local_gather [mode](u,u,vn,gsh->map_local[0^transpose],dom,op,gsh->dstride,
                       gsh->mf_nt[0^transpose],gsh->map_localf[0^transpose],
-		      gsh->m_size[0^transpose],acc);
+		      gsh->m_size[0^transpose],gsh->map_local_e[0^transpose],
+                      1,1,acc);
 
   if(transpose==0) init[mode](u,vn,gsh->flagged_primaries,dom,op,gsh->dstride,
-                              gsh->fp_size,acc);
+                              gsh->fp_size,gsh->fp_map_e,1,1,acc);
 
 
   gsh->r.exec(u,mode,vn,dom,op,transpose,gsh->r.data,&gsh->comm,buf->ptr,gsh->dstride,acc,gsh->r.buffer_size,0,0);
@@ -1635,20 +1645,21 @@ static void gs_aux_isend(
 #endif
 
   static gs_scatter_fun *const local_scatter[] =
-    { &gs_scatter, &gs_scatter_vec, &gs_scatter_many, &scatter_noop, &gs_scatter };
+    { &gs_scatter, &gs_scatter_vec, &gs_scatter_many, &scatter_noop, &gs_scatter_e };
   static gs_gather_fun  *const local_gather [] =
-    { &gs_gather,  &gs_gather_vec,  &gs_gather_many, &gather_noop, &gs_gather  };
+    { &gs_gather,  &gs_gather_vec,  &gs_gather_many, &gather_noop, &gs_gather_e  };
   static gs_init_fun *const init[] =
-    { &gs_init, &gs_init_vec, &gs_init_many, &init_noop, &gs_init };
+    { &gs_init, &gs_init_vec, &gs_init_many, &init_noop, &gs_init_e };
   if(!buf) buf = &static_buffer;
 
   //Need to write gather_e and init_e!!
   local_gather [mode](u,u,vn,gsh->map_local[0^transpose],dom,op,gsh->dstride,
                       gsh->mf_nt[0^transpose],gsh->map_localf[0^transpose],
-		      gsh->m_size[0^transpose],acc,start,count);
+		      gsh->m_size[0^transpose],gsh->map_local_e[0^transpose],
+                      start,count,acc);
 
   if(transpose==0) init[mode](u,vn,gsh->flagged_primaries,dom,op,gsh->dstride,
-			      gsh->fp_size,acc);
+			      gsh->fp_size,gsh->fp_map_e,start,count,acc);
 
   gsh->r.exec_isend(u,mode,vn,dom,op,transpose,gsh->r.data,&gsh->comm,buf->ptr,gsh->dstride,acc,gsh->r.buffer_size,start,count);
 
@@ -1907,7 +1918,6 @@ void gs_element_map_setup(const uint *map, int *mapf, int ***map_e,int data_size
     if(i!=map[current_map_index]) {
       // We use -1 to represent a value that does not take part in the gs routine
       (*map_e)[i][0] = -1;
-      
       //map_e[current_map_index,0] = -1;
     } else {
       //Store the current i in the previously given arrays so that we can
@@ -1946,14 +1956,23 @@ void gs_fp_element_map_setup(const uint *map, int ***map_e,int data_size)
   *map_e = (int**)malloc(data_size*sizeof(int*));
   current_map_index = 0;
   last_i = 0;
+
   for(i=0;i<data_size;i++){
     (*map_e)[i] = (int*)malloc(2*sizeof(int));
-    //Increment current_map_index if we hit a -1 terminator
-    if(map[current_map_index]==-1) current_map_index++;
+    //If we reached a -1, then we're at the end of the map
+    if(map[current_map_index]==-1) {
+      (*map_e)[i][0] = -1;
+      //Fill up the all the remaining data, since we are at the end
+      for(j=last_i;j<data_size-last_i;j++){
+        (*map_e)[j] = (int*)malloc(2*sizeof(int));
+        (*map_e)[j][0] = -1;
+        (*map_e)[j][1] = data_size+1;
+      }
+      break;
+    }
     if(i!=map[current_map_index]) {
       // We use -1 to represent a value that does not take part in the gs routine
       (*map_e)[i][0] = -1;
-      
       //map_e[current_map_index,0] = -1;
     } else {
       //Store the current i in the previously given arrays so that we can
@@ -1969,10 +1988,6 @@ void gs_fp_element_map_setup(const uint *map, int ***map_e,int data_size)
       //We increment current_map_index
       current_map_index = current_map_index + 1;
     }
-  }
-
-  for(j=last_i;j<i;j++){
-    (*map_e)[j][1] = -2;
   }
 
   return;
