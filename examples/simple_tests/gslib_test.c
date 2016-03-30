@@ -223,17 +223,38 @@ int main(int narg, char *arg[])
     }
   }
   //  if(fail==0) printf("Add success! on %d\n",nid);
+
+
+
   //Fill v
 #pragma acc parallel loop present(v[0:localBufSpace],recvbuf[0:localBufSpace])
-  for(i=0;i<localBufSpace;i++){
-    v[i] = recvbuf[i];
-  }
+   for(i=0;i<localBufSpace;i++){
+   v[i] = recvbuf[i];
+   }
   fflush(stdout);
   MPI_Barrier(MPI_COMM_WORLD);
 
+  /* for(i=0;i<localBufSpace/4;i++){ */
+  /*   for(j=i*4;j<i*4+4;j++){ */
+  /*       v[j] = 0; */
+  /*       //        printf("v[%d]: %d\n",j,v[j]); */
+  /*   } */
+  /* } */
 
+  
+  /* for(i=0;i<localBufSpace/4;i++){ */
+  /*   for(j=i*4;j<i*4+4;j++){ */
+  /*       v[j] = recvbuf[j]; */
+  /*       //        printf("v[%d]: %d\n",j,v[j]); */
+  /*   } */
+  /* } */
   gs_irecv(v,dom,gs_mul,0,gsh,0);
   for(i=0;i<localBufSpace/4;i++){
+    /* for(j=i*4;j<i*4+4;j++){ */
+    /*   //      printf("j: %d\n",j); */
+    /*     v[j] = recvbuf[j]; */
+    /*     //        printf("v[%d]: %d\n",j,v[j]); */
+    /* } */
     gs_isend_e(v,dom,gs_mul,0,gsh,0,i*4,4);
   }
   gs_wait(v,dom,gs_mul,0,gsh,0);

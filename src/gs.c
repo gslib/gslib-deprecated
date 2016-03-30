@@ -1522,7 +1522,7 @@ void print_acc(double *a,int n){
   int i;
 #pragma acc update host(a[0:n])
   for(i=0;i<n;i++){
-    printf("%f ",a[i]);
+    printf("%e ",a[i]);
   }
   printf("\n");
 }
@@ -1583,10 +1583,12 @@ static void gs_aux(
     acc = 1;
   }
 #endif
+
   local_gather [mode](u,u,vn,gsh->map_local[0^transpose],dom,op,gsh->dstride,
                       gsh->mf_nt[0^transpose],gsh->map_localf[0^transpose],
 		      gsh->m_size[0^transpose],gsh->map_local_e[0^transpose],
                       1,1,acc);
+
 
   if(transpose==0) init[mode](u,vn,gsh->flagged_primaries,dom,op,gsh->dstride,
                               gsh->fp_size,gsh->fp_map_e,1,1,acc);
@@ -1652,11 +1654,13 @@ static void gs_aux_isend(
     { &gs_init, &gs_init_vec, &gs_init_many, &init_noop, &gs_init_e };
   if(!buf) buf = &static_buffer;
 
+
   //Need to write gather_e and init_e!!
   local_gather [mode](u,u,vn,gsh->map_local[0^transpose],dom,op,gsh->dstride,
                       gsh->mf_nt[0^transpose],gsh->map_localf[0^transpose],
 		      gsh->m_size[0^transpose],gsh->map_local_e[0^transpose],
                       start,count,acc);
+
 
   if(transpose==0) init[mode](u,vn,gsh->flagged_primaries,dom,op,gsh->dstride,
 			      gsh->fp_size,gsh->fp_map_e,start,count,acc);

@@ -120,7 +120,7 @@ _Pragma("acc wait")						   \
   uint i,j,k; const T e = gs_identity_##T[op];		\
   for(k=0;k<vn;++k) {\
 _Pragma("acc parallel loop gang vector present(map[0:m_size],out) async(k+1) if(acc)") \
-    for(i=0;i<m_size;i++){\
+ for(i=0;i<m_size;i++){                                                 \
         out[map[i]+k*dstride] = e;              \
     }                                           \
   }\
