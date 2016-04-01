@@ -28,6 +28,7 @@
 #define gs_isend         PREFIXED_NAME(gs_isend )
 #define gs_isend_e       PREFIXED_NAME(gs_isend_e )
 #define gs_wait          PREFIXED_NAME(gs_wait  )
+#define gs_wait_e        PREFIXED_NAME(gs_wait_e )
 #define gs_many          PREFIXED_NAME(gs_many  )
 #define gs_many_isend    PREFIXED_NAME(gs_many_isend  )
 #define gs_many_irecv    PREFIXED_NAME(gs_many_irecv  )
@@ -42,6 +43,10 @@ GS_DEFINE_DOM_SIZES()
 void gs_flatmap_setup(const uint *map, int **mapf, int *mf_nt, int *m_size);
 static int map_size(const uint *map, int *t);
 static int fp_map_size(const uint *map);
+static void pw_needed_req(send_queue *queue,comm_req *req_queue,comm_req *req,
+                          const uint *restrict map,
+                          int*mapf,const uint **map_e,int start,int count);
+
 typedef enum { mode_plain, mode_vec, mode_many,
                mode_dry_run, mode_ele } gs_mode;
 
@@ -430,7 +435,11 @@ struct pw_data {
   int *map_e[2];
   int mf_nt[2];
   int mf_size[2];
+  int first_call;
   comm_req *req;
+  comm_req *req_queue;
+  int *prior_req;
+  int req_complete;
   uint buffer_size;
 };
 
@@ -554,7 +563,7 @@ static void pw_exec_irecv(
   unsigned transpose, const void *execdata, const struct comm *comm, 
   char *buf,int dstride,int acc,int bufSize,int start, int count)
 {
-  const struct pw_data *pwd = execdata;
+  struct pw_data *pwd = execdata;
   static gs_scatter_fun *const scatter_to_buf[] =
     { &gs_scatter, &gs_scatter_vec, &gs_scatter_many_to_vec, &scatter_noop, &gs_scatter_e };
   static gs_gather_fun *const gather_from_buf[] =
@@ -563,7 +572,7 @@ static void pw_exec_irecv(
   unsigned unit_size = vn*gs_dom_size[dom];
   char* sendbuf;
   int i;
-
+  pwd->first_call = 0;
 /* post receives */
   //  printf("r:pwe: %d %lX %lX %d:\n",pwd->comm[recv].n,(pwd->comm[recv].p),(pwd->comm[recv].size),pwd->comm[recv].total);
   //printf("s:pwe: %d %lX %lX %d:\n",pwd->comm[send].n,(pwd->comm[send].p),(pwd->comm[send].size),pwd->comm[send].total);
@@ -604,18 +613,18 @@ static void pw_exec_isend(
 
   //
 
-  for(i=0;i<pwd->queue[send].queue_length;i++) {
-    pw_exec_single_send(sendbuf,unit_size,comm,&pwd->comm[send],
-                        &pwd->req[pwd->comm[recv].n+pwd->queue[send].queue[i]],
-                        pwd->queue[send].queue[i],
-                        pwd->queue[send].buf_offset[pwd->queue[send].queue[i]]);
-  }
+  /* for(i=0;i<pwd->queue[send].queue_length;i++) { */
+  /*   pw_exec_single_send(sendbuf,unit_size,comm,&pwd->comm[send], */
+  /*                       &pwd->req[pwd->comm[recv].n+pwd->queue[send].queue[i]], */
+  /*                       pwd->queue[send].queue[i], */
+  /*                       pwd->queue[send].buf_offset[pwd->queue[send].queue[i]]); */
+  /* } */
 
   //Reset queue
-  for(i=0;i<pwd->queue[send].queue_length;i++) {
-    pwd->queue[send].queue[i] = 0;
-  }
-  pwd->queue[send].queue_length = 0;
+  /* for(i=0;i<pwd->queue[send].queue_length;i++) { */
+  /*   pwd->queue[send].queue[i] = 0; */
+  /* } */
+  /* pwd->queue[send].queue_length = 0; */
 
 }
 
@@ -624,16 +633,60 @@ static void pw_exec_wait(
   unsigned transpose, const void *execdata, const struct comm *comm, 
   char *buf,int dstride,int acc,int bufSize,int start, int count)
 {
-  const struct pw_data *pwd = execdata;
+  struct pw_data *pwd = execdata;
   static gs_scatter_fun *const scatter_to_buf[] =
     { &gs_scatter, &gs_scatter_vec, &gs_scatter_many_to_vec, &scatter_noop, &gs_scatter_e };
   static gs_gather_fun *const gather_from_buf[] =
-    { &gs_gather, &gs_gather_vec, &gs_gather_vec_to_many, &gather_noop, &gs_gather };
+    { &gs_gather, &gs_gather_vec, &gs_gather_vec_to_many, &gather_noop, &gs_gather_e };
   const unsigned recv = 0^transpose, send = 1^transpose;
   unsigned unit_size = vn*gs_dom_size[dom];
-  int i;
+  char *sendbuf;
+  int i,j,k,nreq,prior_indices[pwd->comm[0].n],req_index;
+  const uint *restrict map = pwd->map[recv];
+  int *mapf = pwd->mapf[recv];
+  const uint **map_e = pwd->map_e[recv];
 
-  comm_wait(pwd->req,pwd->comm[0].n+pwd->comm[1].n);
+  sendbuf = buf+unit_size*pwd->comm[recv].total;
+  /* post sends on first call */
+  if(pwd->first_call==0) {
+    pw_exec_sends(sendbuf,unit_size,comm,&pwd->comm[send],
+                  &pwd->req[pwd->comm[recv].n]);
+    pwd->first_call = 1;
+    pwd->req_complete = 0;
+    for(i=0;i<pwd->comm[0].n+pwd->comm[1].n;i++){ 
+      pwd->prior_req[i] = 0;
+    }
+  }
+
+  //Only do the search / wait if we haven't completed all buffers
+  if(pwd->req_complete<pwd->comm[0].n){
+    nreq = 0;
+    for(i=start;i<start+count;i++){
+      for(j=0;j<mapf[map_e[i][0]+1];j++){
+        req_index = pwd->queue[recv].map_to_buf[map[mapf[map_e[i][0]]+j+1]];
+
+        for(k=0;k<pwd->req_complete;k++){
+          if(req_index==pwd->prior_req[k]){
+            req_index = -1;
+            break;
+          }
+        }
+        if(req_index!=-1){
+          pwd->req_queue[nreq] = pwd->req[req_index];
+          pwd->prior_req[nreq] = req_index;
+          pwd->req_complete++;
+          nreq++;
+        }
+      }
+    }
+    comm_wait(pwd->req_queue,nreq);
+  }
+
+  /* printf("num buff: %d %d\n",nreq,pwd->comm[0].n+pwd->comm[1].n); */
+  /* if(nreq>0) { */
+  /*   comm_wait(pwd->req,nreq*(pwd->comm[0].n+pwd->comm[1].n)); */
+  /* } */
+  //Might need to reset pwd->req?!
 
 #pragma acc update device(buf[0:unit_size*bufSize/2]) if(acc)
 
@@ -642,7 +695,7 @@ static void pw_exec_wait(
   /* gather using recv buffer */
   gather_from_buf[mode](data,buf,vn,pwd->map[recv],dom,op,dstride,pwd->mf_nt[recv],
                         pwd->mapf[recv],pwd->mf_size[recv],pwd->map_e[recv],
-                        start,count,acc);
+                        start,count,comm_gbl_id);
   //Reset buf_current
   for(i=0;i<pwd->comm[0].n;i++){
     pwd->queue[0].buf_current[i] = 0;
@@ -652,7 +705,23 @@ static void pw_exec_wait(
   }
 }
 
+ static void pw_needed_req(send_queue *queue,comm_req *req_queue,comm_req *req,
+                           const uint *restrict map,
+                           int*mapf,const uint **map_e,int start,int count)
+{
+  int nreq,i,j;
 
+  nreq = 0;
+  for(i=start;i<start+count;i++){
+    for(j=0;j<mapf[map_e[i][0]+1];j++){
+      printf("needed_req: %d %d\n",queue->map_to_buf[map[mapf[map_e[i][0]]+j+1]],nreq);
+      *(req_queue+nreq) = req[queue->map_to_buf[map[mapf[map_e[i][0]]+j+1]]];
+      nreq++;
+    }
+  }
+
+  queue->queue_length = nreq;
+}
 /*------------------------------------------------------------------------------
   Pairwise setup
 ------------------------------------------------------------------------------*/
@@ -752,6 +821,9 @@ static struct pw_data *pw_setup_aux(struct array *sh, buffer *buf,
   /* print_map_e(pwd->map_e[1],data_size); */
   }
   pwd->req = tmalloc(comm_req,pwd->comm[0].n+pwd->comm[1].n);
+  //Maybe reduce size of below to only comm[0].n
+  pwd->req_queue = tmalloc(comm_req,pwd->comm[0].n+pwd->comm[1].n);
+  pwd->prior_req = tmalloc(int,pwd->comm[0].n+pwd->comm[1].n);
   *mem_size += (pwd->comm[0].n+pwd->comm[1].n)*sizeof(comm_req);
   pwd->buffer_size = pwd->comm[0].total + pwd->comm[1].total;
   return pwd;
@@ -1671,7 +1743,7 @@ static void gs_aux_isend(
 
 static void gs_aux_wait(
   void *u, gs_mode mode, unsigned vn, gs_dom dom, gs_op op, unsigned transpose,
-  struct gs_data *gsh, buffer *buf)
+  struct gs_data *gsh, buffer *buf,int start,int count)
 {
   int acc, i;
   acc = 0;
@@ -1682,20 +1754,20 @@ static void gs_aux_wait(
 #endif
 
   static gs_scatter_fun *const local_scatter[] =
-    { &gs_scatter, &gs_scatter_vec, &gs_scatter_many, &scatter_noop };
+    { &gs_scatter, &gs_scatter_vec, &gs_scatter_many, &scatter_noop, &gs_scatter_e };
   static gs_gather_fun  *const local_gather [] =
-    { &gs_gather,  &gs_gather_vec,  &gs_gather_many, &gather_noop  };
+    { &gs_gather,  &gs_gather_vec,  &gs_gather_many, &gather_noop, &gs_gather_e  };
   static gs_init_fun *const init[] =
     { &gs_init, &gs_init_vec, &gs_init_many, &init_noop };
 
   if(!buf) buf = &static_buffer;
 
-  gsh->r.exec_wait(u,mode,vn,dom,op,transpose,gsh->r.data,&gsh->comm,buf->ptr,gsh->dstride,acc,gsh->r.buffer_size,0,0);
+  gsh->r.exec_wait(u,mode,vn,dom,op,transpose,gsh->r.data,&gsh->comm,buf->ptr,gsh->dstride,acc,gsh->r.buffer_size,start,count);
 
   local_scatter[mode](u,u,vn,gsh->map_local[1^transpose],dom,gsh->dstride,
                       gsh->mf_nt[1^transpose],gsh->map_localf[1^transpose],
 		      gsh->m_size[1^transpose],gsh->map_local_e[1^transpose],
-                      &gsh->queue[1^transpose],1,1,acc);
+                      &gsh->queue[1^transpose],start,count,acc);
 
 }
 
@@ -1729,7 +1801,13 @@ void gs_isend_e(void *u, gs_dom dom, gs_op op, unsigned transpose,
 void gs_wait(void *u, gs_dom dom, gs_op op, unsigned transpose,
         struct gs_data *gsh, buffer *buf)
 {
-  gs_aux_wait(u,mode_plain,1,dom,op,transpose,gsh,buf);
+  gs_aux_wait(u,mode_ele,1,dom,op,transpose,gsh,buf,0,gsh->dstride);
+}
+
+void gs_wait_e(void *u, gs_dom dom, gs_op op, unsigned transpose,
+               struct gs_data *gsh, buffer *buf,int start,int count)
+{
+  gs_aux_wait(u,mode_ele,1,dom,op,transpose,gsh,buf,start,count);
 }
 
 
@@ -2097,6 +2175,7 @@ static int fp_map_size(const uint *map)
 #undef gs_isend
 #undef gs_isend_e
 #undef gs_wait
+#undef gs_wait_e
 #undef gs_free
 #undef gs_setup
 #undef gs_many
@@ -2110,6 +2189,7 @@ static int fp_map_size(const uint *map)
 #define cgs_isend       PREFIXED_NAME(gs_isend)
 #define cgs_isend_e     PREFIXED_NAME(gs_isend_e)
 #define cgs_wait        PREFIXED_NAME(gs_wait )
+#define cgs_wait_e      PREFIXED_NAME(gs_wait_e )
 #define cgs_vec         PREFIXED_NAME(gs_vec  )
 #define cgs_many        PREFIXED_NAME(gs_many )
 #define cgs_many_irecv  PREFIXED_NAME(gs_many_irecv )
@@ -2125,6 +2205,7 @@ static int fp_map_size(const uint *map)
 #define fgs_isend         FORTRAN_NAME(gs_op_isend         ,GS_OP_ISEND  )
 #define fgs_isend_e       FORTRAN_NAME(gs_op_isend_e       ,GS_OP_ISEND_E)
 #define fgs_wait          FORTRAN_NAME(gs_op_wait          ,GS_OP_WAIT   )
+#define fgs_wait_e        FORTRAN_NAME(gs_op_wait_e        ,GS_OP_WAIT_E )
 #define fgs_vec           FORTRAN_NAME(gs_op_vec           ,GS_OP_VEC    )
 #define fgs_many          FORTRAN_NAME(gs_op_many          ,GS_OP_MANY   )
 #define fgs_fields        FORTRAN_NAME(gs_op_fields        ,GS_OP_FIELDS )
@@ -2262,6 +2343,15 @@ void fgs_wait(const sint *handle, void *u, const sint *dom, const sint *op,
   fgs_check_parms(*handle,*dom,*op,"gs_op",__LINE__);
 
   cgs_wait(u,fgs_dom[*dom],(gs_op_t)(*op-1),*transpose!=0,fgs_info[*handle],0);
+
+}
+
+void fgs_wait_e(const sint *handle, void *u, const sint *dom, const sint *op,
+                const sint *transpose,const sint *start,const sint *count)
+{
+  fgs_check_parms(*handle,*dom,*op,"gs_op",__LINE__);
+
+  cgs_wait_e(u,fgs_dom[*dom],(gs_op_t)(*op-1),*transpose!=0,fgs_info[*handle],0,*start,*count);
 
 }
 

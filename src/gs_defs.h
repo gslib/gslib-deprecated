@@ -78,6 +78,7 @@ typedef enum { LIST } gs_op;
 #undef ITEM
 #undef LIST
 
+
 typedef struct send_queue_struct {
   int* buf_offset; /*offset in buf to begining of specific buf*/
   int* buf_current; /* current number packed in each buf*/

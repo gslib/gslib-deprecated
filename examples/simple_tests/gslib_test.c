@@ -52,7 +52,7 @@ int main(int narg, char *arg[])
   int *targetCoreIndexing,index;
   slong *sendbuf,*recvbuf;
   int *sendcounts,*displs,*duplicate_count;
-  int ret,totalElements,maxNp,v1,v2,v3,v4;
+  int ret,m,totalElements,maxNp,v1,v2,v3,v4;
   int arrayOffset,kOld,localBufSpace,maxArray;
   int elementIndex,targetCore,i,j,nid,k;
   char buffer[1024];
@@ -210,24 +210,28 @@ int main(int narg, char *arg[])
   /* printf("after isend, nid: %d\n",nid); */
   /* gs_wait(v,dom,gs_add,0,gsh,0); */
   /* printf("after wait, nid: %d\n",nid); */
-  gs(v,dom,gs_add,0,gsh,0);
+  //  gs(v,dom,gs_add,0,gsh,0);
 
 #pragma acc update host(v[0:localBufSpace])
   fail = 0;
   //Check v
   for(i=0;i<localBufSpace;i++){
     if(v[i]!=duplicate_count[recvbuf[i]]*recvbuf[i]){
-      printf("Add failure on core %d index %d\n",nid,i);
-      printf("v[%d] %f recv %d %d\n",i,v[i],duplicate_count[recvbuf[i]],recvbuf[i]);
+      /* printf("Add failure on core %d index %d\n",nid,i); */
+      /* printf("v[%d] %f recv %d %d\n",i,v[i],duplicate_count[recvbuf[i]],recvbuf[i]); */
       fail = 1;
     }
   }
   //  if(fail==0) printf("Add success! on %d\n",nid);
 
 
-
+  for(m=0;m<2;m++){
   //Fill v
 #pragma acc parallel loop present(v[0:localBufSpace],recvbuf[0:localBufSpace])
+   for(i=0;i<localBufSpace;i++){
+     v[i] = 0;
+   }
+
    for(i=0;i<localBufSpace;i++){
    v[i] = recvbuf[i];
    }
@@ -249,32 +253,40 @@ int main(int narg, char *arg[])
   /*   } */
   /* } */
   gs_irecv(v,dom,gs_mul,0,gsh,0);
-  for(i=0;i<localBufSpace/4;i++){
+
+  for(i=0;i<localBufSpace/2;i++){
     /* for(j=i*4;j<i*4+4;j++){ */
     /*   //      printf("j: %d\n",j); */
     /*     v[j] = recvbuf[j]; */
     /*     //        printf("v[%d]: %d\n",j,v[j]); */
     /* } */
-    gs_isend_e(v,dom,gs_mul,0,gsh,0,i*4,4);
+    gs_isend_e(v,dom,gs_mul,0,gsh,0,i*2,2);
   }
-  gs_wait(v,dom,gs_mul,0,gsh,0);
+
+  //  gs_wait_e(v,dom,gs_mul,0,gsh,0,0,localBufSpace);
+
   //gs(v,dom,gs_mul,0,gsh,0);
 
 #pragma acc update host(v[0:localBufSpace])
   fail = 0;
-  MPI_Barrier(MPI_COMM_WORLD);
+  //  MPI_Barrier(MPI_COMM_WORLD);
 
   //Check v
-  for(i=0;i<localBufSpace;i++){
-    if(v[i]!=pow(recvbuf[i],duplicate_count[recvbuf[i]])){
-      printf("Mult failure on core %d index %d\n",nid,i);
-      printf("v[%d] %f recv %d %d\n",i,v[i],recvbuf[i],duplicate_count[recvbuf[i]]);
-      fail = 1;
+  for(i=0;i<localBufSpace/2;i++){
+    gs_wait_e(v,dom,gs_mul,0,gsh,0,i*2,2);
+
+    for(j=0;j<2;j++){
+      if(v[i]!=pow(recvbuf[i],duplicate_count[recvbuf[i]])){
+        printf("Mult failure on core %d index %d\n",nid,i);
+        printf("v[%d] %f recv %d %d\n",i,v[i],recvbuf[i],duplicate_count[recvbuf[i]]);
+        fail = 1;
+      }
     }
   }
-  
+
+  }
   //  if(fail==0) printf("Mult success! on %d\n",nid);
-  if(nid==0) printf("If there were no error messages, both mult and add succeeded!\n");
+  if(nid==0&&fail==0) printf("If there were no error messages, both mult and add succeeded!\n");
   comm_free(&comm);
   if(nid==0){
     for(i=0;i<np;i++) free(mat[i]);
