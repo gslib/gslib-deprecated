@@ -110,19 +110,23 @@ _Pragma("acc wait")						   \
 
 /*------------------------------------------------------------------------------
   The basic initialization kernel
+  Should make this a for loop with definite size for ACC
+  like: 
+  for(i=0;i<m_size;i++){                                \
+      out[map[i]] = e;                        \
+  }                                                     \
 ------------------------------------------------------------------------------*/
 #define DEFINE_INIT(T) \
   static void init_##T(T *restrict out, const uint *restrict map, gs_op op,int dstride,\
 		       int vn, int m_size, int acc)			\
 {                                                       \
   uint i,j,k; const T e = gs_identity_##T[op];		\
-  for(k=0;k<vn;++k) {\
-_Pragma("acc parallel loop gang vector present(map[0:m_size],mapf[0:2*mf_nt],out) async(k+1) if(acc)")\
-    for(i=0;i<m_size;i++){\
-      _Pragma("acc loop seq")                   \
-        out[map[i]+k*dstride] = e;              \
-    }                                           \
-  }\
+  for(k=0;k<vn;k++) {                                   \
+_Pragma("acc parallel loop gang vector present(map[0:m_size],out) async(k+1) if(acc)") \
+    for(i=0;i<m_size;i++){                              \
+      out[map[i]+k*dstride] = e;                        \
+    }                                                   \
+  }                                                     \
 _Pragma("acc wait")\
 }
 
@@ -310,8 +314,7 @@ void gs_scatter_many(void *out, const void *in, const unsigned vn,
 }
 
 void gs_init_many(void *out, const unsigned vn, const uint *map,
-                  gs_dom dom, gs_op op,int dstride, int mf_nt,
-		  int *mapf, int m_size, int acc)
+                  gs_dom dom, gs_op op,int dstride,int m_size, int acc)
 {
 #define WITH_DOMAIN(T) init_##T(out,map,op,dstride,vn,m_size,acc)
   SWITCH_DOMAIN(dom);
