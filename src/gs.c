@@ -673,13 +673,16 @@ static void pw_exec_wait(
         }
         if(req_index!=-1){
           pwd->req_queue[nreq] = pwd->req[req_index];
+          pwd->req[req_index]  = MPI_REQUEST_NULL;
           pwd->prior_req[nreq] = req_index;
           pwd->req_complete++;
           nreq++;
         }
       }
     }
+
     comm_wait(pwd->req_queue,nreq);
+
   }
 
   /* printf("num buff: %d %d\n",nreq,pwd->comm[0].n+pwd->comm[1].n); */
