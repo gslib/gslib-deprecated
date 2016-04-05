@@ -40,6 +40,7 @@
 GS_DEFINE_DOM_SIZES()
 
 /* Function prototypes */
+void gs_invert_map(uint **map,int *mapf,int mf_nt);
 void gs_flatmap_setup(const uint *map, int **mapf, int *mf_nt, int *m_size);
 static int map_size(const uint *map, int *t);
 static int fp_map_size(const uint *map);
@@ -801,6 +802,7 @@ static struct pw_data *pw_setup_aux(struct array *sh, buffer *buf,
   pwd->map[0] = pw_map_setup(sh, buf, mem_size);
   /* Get flattened map */
   gs_flatmap_setup(pwd->map[0],&(pwd->mapf[0]),&(pwd->mf_nt[0]),&(pwd->mf_size[0]));
+
   pw_send_queue_setup(&pwd->comm[0],&pwd->queue[0],pwd->map[0],pwd->mapf[0],pwd->mf_nt[0]);
   /* Get element map */
   gs_element_map_setup(pwd->map[0],pwd->mapf[0],&(pwd->map_e[0]),data_size);
@@ -1860,7 +1862,7 @@ static uint local_setup(struct gs_data *gsh, const struct array *nz)
   s = 0;
   gsh->map_local[0] = local_map(nz,1, &s);
   gs_flatmap_setup(gsh->map_local[0],&(gsh->map_localf[0]),&(gsh->mf_nt[0]),&(gsh->m_size[0]));
-
+  gs_invert_map(&(gsh->map_local[0]),gsh->map_localf[0],gsh->mf_nt[0]);
   /* Get element map */
   gs_element_map_setup(gsh->map_local[0],gsh->map_localf[0],&(gsh->map_local_e[0]),gsh->dstride);
 
@@ -1869,6 +1871,9 @@ static uint local_setup(struct gs_data *gsh, const struct array *nz)
   s = 0;
   gsh->map_local[1] = local_map(nz,0, &s);
   gs_flatmap_setup(gsh->map_local[1],&(gsh->map_localf[1]),&(gsh->mf_nt[1]),&(gsh->m_size[1]));
+  print_map(gsh->map_local[1],30);
+  gs_invert_map(&(gsh->map_local[1]),gsh->map_localf[1],gsh->mf_nt[1]);
+  print_map(gsh->map_local[1],30);
   /* Get element map */
   gs_element_map_setup(gsh->map_local[1],gsh->map_localf[1],&(gsh->map_local_e[1]),gsh->dstride);
 
@@ -1990,6 +1995,79 @@ void gs_flatmap_setup(const uint *map, int **mapf, int *mf_nt, int *m_size)
 
 
 void gs_element_map_setup(const uint *map, int *mapf, int ***map_e,int data_size)
+{
+  uint    i,j,k,current_map_index,current_mapf_index;
+  int     last_i;
+
+  *map_e = (int**)malloc(data_size*sizeof(int*));
+  current_map_index = 0;
+  current_mapf_index = 0;
+  last_i = 0;
+  for(i=0;i<data_size;i++){
+    (*map_e)[i] = (int*)malloc(2*sizeof(int));
+    if(i!=map[current_map_index]) {
+      // We use -1 to represent a value that does not take part in the gs routine
+      (*map_e)[i][0] = -1;
+      //map_e[current_map_index,0] = -1;
+    } else {
+      //Store the current i in the previously given arrays so that we can
+      //jump to this i when we land in a spot where data did not need
+      //to be calculated. 
+      for(j=last_i;j<i;j++){
+        (*map_e)[j][1] = i;
+      }
+      //mapf[current_mapf_index] is an index into map of the initial location
+      // we want map[mapf[map_e[i,0]]] to be the proper location in map
+      (*map_e)[i][0] = current_mapf_index;
+      last_i     = i;
+      //mapf[current_mapf_index+1] gives us the multiplicity (-1) of
+      // the map destinations. The extra +2 is due to the -1 terminator 
+      // in map and the -1 in the definition of multiplicity
+      current_map_index = current_map_index + mapf[current_mapf_index+1]+2;
+
+      // increment by 2 because mapf stores location, then number
+      current_mapf_index += 2;
+    }
+  }
+
+  for(j=last_i;j<i;j++){
+    (*map_e)[j][1] = -2;
+  }
+
+  return;
+}
+
+//Simple function to put the largest array index in each group at the top of the map
+void gs_invert_map(uint **map,int *mapf,int mf_nt)
+{
+  int largest_tmp,i,j,largest_loc,current_tmp;
+
+  //Initialize all map_e to -1
+  for(i=0;i<data_size;i++){
+    (*map_e)[i][0] = -1;
+  }
+  for(i=0;i<mf_nt;i++) {
+    largest_tmp = -1;
+    largest_loc = 0;
+    for(j=0;j<mapf[i*2+1]+1;j++){
+      current_tmp = *(*map+mapf[i*2]+j);
+      if(current_tmp>largest_tmp){
+        largest_loc = j;
+        largest_tmp= current_tmp;
+      }
+    }
+
+    *(*map+mapf[i*2]+largest_loc) = *(*map+mapf[i*2]);
+    *(*map+mapf[i*2]) = largest_tmp;
+    // Store the largest of a group's mapf_location
+    (*map_e)[largest_tmp][0] = i; //or +1?
+  }
+
+  return;
+
+}
+
+void gs_element_map_setup2(const uint *map, int *mapf, int ***map_e,int data_size)
 {
   uint    i,j,k,current_map_index,current_mapf_index;
   int     last_i;

@@ -210,7 +210,7 @@ int main(int narg, char *arg[])
   /* printf("after isend, nid: %d\n",nid); */
   /* gs_wait(v,dom,gs_add,0,gsh,0); */
   /* printf("after wait, nid: %d\n",nid); */
-  //  gs(v,dom,gs_add,0,gsh,0);
+  gs(v,dom,gs_add,0,gsh,0);
 
 #pragma acc update host(v[0:localBufSpace])
   fail = 0;
@@ -253,17 +253,17 @@ int main(int narg, char *arg[])
   /*   } */
   /* } */
   gs_irecv(v,dom,gs_mul,0,gsh,0);
+  gs_isend(v,dom,gs_mul,0,gsh,0);
+  /* for(i=0;i<localBufSpace/2;i++){ */
+  /*   /\* for(j=i*4;j<i*4+4;j++){ *\/ */
+  /*   /\*   //      printf("j: %d\n",j); *\/ */
+  /*   /\*     v[j] = recvbuf[j]; *\/ */
+  /*   /\*     //        printf("v[%d]: %d\n",j,v[j]); *\/ */
+  /*   /\* } *\/ */
+  /*   gs_isend_e(v,dom,gs_mul,0,gsh,0,i*2,2); */
+  /* } */
 
-  for(i=0;i<localBufSpace/2;i++){
-    /* for(j=i*4;j<i*4+4;j++){ */
-    /*   //      printf("j: %d\n",j); */
-    /*     v[j] = recvbuf[j]; */
-    /*     //        printf("v[%d]: %d\n",j,v[j]); */
-    /* } */
-    gs_isend_e(v,dom,gs_mul,0,gsh,0,i*2,2);
-  }
-
-  //  gs_wait_e(v,dom,gs_mul,0,gsh,0,0,localBufSpace);
+   gs_wait_e(v,dom,gs_mul,0,gsh,0,0,localBufSpace);
 
   //gs(v,dom,gs_mul,0,gsh,0);
 
@@ -273,7 +273,7 @@ int main(int narg, char *arg[])
 
   //Check v
   for(i=0;i<localBufSpace/2;i++){
-    gs_wait_e(v,dom,gs_mul,0,gsh,0,i*2,2);
+    //    gs_wait_e(v,dom,gs_mul,0,gsh,0,i*2,2);
 
     for(j=0;j<2;j++){
       if(v[i]!=pow(recvbuf[i],duplicate_count[recvbuf[i]])){
