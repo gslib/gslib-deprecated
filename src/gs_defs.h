@@ -86,6 +86,10 @@ typedef struct send_queue_struct {
   int queue_length; /*number of messages currently ready in queue*/
   int* queue; /* list of buffers ready to send */
   int* map_to_buf; /* takes a map index and returns a buffer number */
+  int* map_to_buf2; /* takes a map index and returns a buffer number */
+  int* pack_queue;
+  int last_packed;
+  int pack_num;
 } send_queue;
 
 

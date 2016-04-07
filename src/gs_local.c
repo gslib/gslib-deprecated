@@ -207,8 +207,8 @@ static void scatter_e_q_##T( \
   T *restrict out, const unsigned out_stride,                      \
   const T *restrict in, const unsigned in_stride,                  \
   const uint *restrict map,int dstride, int mf_nt, int*mapf,       \
-  int vn, int m_size, const uint **map_e, send_queue *queue,        \
-  int start,int count,int acc)                                     \
+  int vn, int m_size, send_queue *queue,        \
+  int acc)                                     \
 {                                                                  \
   uint i,j,k,l,index,dstride_in=1,dstride_out=1;                   \
   if(in_stride==1)  dstride_in=dstride;                            \
@@ -216,21 +216,17 @@ static void scatter_e_q_##T( \
   l=0;\
   for(k=0;k<vn;++k) {                                              \
 _Pragma("acc parallel loop gang vector present(map[0:m_size],in,mapf[0:2*mf_nt],out) async(k+1) if(acc)") \
-    for(i=start;i<start+count;i++){ \
-        if(map_e[i][0]!=-1) {                                         \
-          T t=in[in_stride*map[mapf[map_e[i][0]]]+k*dstride_in];           \
-          for(j=0;j<mapf[map_e[i][0]+1];j++) {                          \
-            index = out_stride*map[mapf[map_e[i][0]]+j+1]+k*dstride_out; \
-            out[index] = t;                                             \
-            queue->buf_current[queue->map_to_buf[index]]++;             \
-            if(queue->buf_current[queue->map_to_buf[index]]==queue->buf_size[queue->map_to_buf[index]]){ \
-                queue->queue[l] = queue->map_to_buf[index];               \
-                l++;\
-              }\
-          } \
-        } else {                                                       \
-          i=map_e[i][1]-1;                                                  \
+    for(i=0;i<queue->pack_num;i++){ \
+      T t=in[in_stride*map[mapf[queue->pack_queue[i]]]+k*dstride_in];            \
+      for(j=0;j<mapf[queue->pack_queue[i]+1];j++) {                     \
+        index = out_stride*map[mapf[queue->pack_queue[i]]+j+1]+k*dstride_out; \
+        out[index] = t;                                                 \
+        queue->buf_current[queue->map_to_buf[index]]++;                 \
+        if(queue->buf_current[queue->map_to_buf[index]]==queue->buf_size[queue->map_to_buf[index]]){ \
+          queue->queue[l] = queue->map_to_buf[index];                   \
+          l++;                                                          \
         }                                                               \
+      }                                                                 \
     }                                                                   \
   }                                                                     \
 _Pragma("acc wait")                                                   \
@@ -253,29 +249,26 @@ static void scatter_e_##T( \
   T *restrict out, const unsigned out_stride,                      \
   const T *restrict in, const unsigned in_stride,                  \
   const uint *restrict map,int dstride, int mf_nt, int*mapf,       \
-    int vn, int m_size, const uint **map_e,                        \
-  int start,int count,int acc)                                     \
+  int vn, int m_size, send_queue *queue,        \
+  int acc)                                     \
 {                                                                  \
-  uint i,j,k,l,index,dstride_in=1,dstride_out=1;                   \
+  uint i,j,k,index,dstride_in=1,dstride_out=1;                   \
   if(in_stride==1)  dstride_in=dstride;                            \
   if(out_stride==1) dstride_out=dstride;                           \
-  l=0;\
-  for(k=0;k<vn;++k) {                                              \
+  for(k=0;k<vn;++k) {                                                   \
 _Pragma("acc parallel loop gang vector present(map[0:m_size],in,mapf[0:2*mf_nt],out) async(k+1) if(acc)") \
-    for(i=start;i<start+count;i++){ \
-        if(map_e[i][0]!=-1) {                                         \
-          T t=in[in_stride*map[mapf[map_e[i][0]]]+k*dstride_in];           \
-          for(j=0;j<mapf[map_e[i][0]+1];j++) {                          \
-            index = out_stride*map[mapf[map_e[i][0]]+j+1]+k*dstride_out; \
-            out[index] = t;                                             \
-          } \
-        } else {                                                       \
-          i=map_e[i][1]-1;                                                  \
-        }                                                               \
+    for(i=0;i<queue->pack_num;i++){                                     \
+      T t=in[in_stride*map[mapf[queue->pack_queue[i]]]+k*dstride_in];   \
+      for(j=0;j<mapf[queue->pack_queue[i]+1];j++) {                     \
+        index = out_stride*map[mapf[queue->pack_queue[i]]+j+1]+k*dstride_out; \
+        out[index] = t;                                                 \
+      }                                                                 \
     }                                                                   \
   }                                                                     \
 _Pragma("acc wait")                                                   \
-}
+}                                                                   \
+
+
 
 /*------------------------------------------------------------------------------
   The elemental gather kernel
@@ -284,24 +277,20 @@ _Pragma("acc wait")                                                   \
 static void gather_e_##T##_##OP( \
   T *restrict out, const T *restrict in, const unsigned in_stride,           \
   const uint *restrict map, int dstride, int mf_nt, int *mapf, \
-  int vn, int m_size, const uint **map_e,int start, int count,int acc)  \
-{                                                                            \
-  uint i,j,k;      \
-  int dstride_in=1; \
-  if(in_stride==1) dstride_in=dstride; \
+  int vn, int m_size, send_queue *queue,int acc)  \
+{                                                                       \
+  uint i,j,k;                                                           \
+  int dstride_in=1;                                                     \
+  if(in_stride==1) dstride_in=dstride;                                  \
   for(k=0;k<vn;++k) {                                                   \
     _Pragma("acc parallel loop gang vector present(out,in,mapf[0:2*mf_nt],map[0:m_size]) async(k+1) if(acc)") \
-    for(i=start;i<start+count;i++) {                                  \
-      if(map_e[i][0]!=-1){                                              \
-        T t=out[map[mapf[map_e[i][0]]]+k*dstride];                      \
-_Pragma("acc loop seq")                                         \
-        for(j=0;j<mapf[map_e[i][0]+1];j++) {                                  \
-          GS_DO_##OP(t,in[in_stride*map[mapf[map_e[i][0]]+j+1]+k*dstride_in]); \
+      for(i=0;i<queue->pack_num;i++) {                                  \
+      T t=out[map[mapf[queue->pack_queue[i]]]+k*dstride];               \
+      _Pragma("acc loop seq")                                           \
+      for(j=0;j<mapf[queue->pack_queue[i]+1];j++) {                     \
+          GS_DO_##OP(t,in[in_stride*map[mapf[queue->pack_queue[i]]+j+1]+k*dstride_in]); \
         }                                                               \
-        out[map[mapf[map_e[i][0]]]+k*dstride] = t;                             \
-      } else {                                                          \
-        i=map_e[i][1]-1;                                                \
-      }                                                                 \
+      out[map[mapf[queue->pack_queue[i]]]+k*dstride] = t;               \
     }                                                                   \
   }                                                                     \
   _Pragma("acc wait")							\
@@ -309,7 +298,7 @@ _Pragma("acc loop seq")                                         \
 
 /*------------------------------------------------------------------------------
   The elemental initialization kernel
-------------------------------------------------------------------------------*/
+ ------------------------------------------------------------------------------*/
 #define DEFINE_INIT(T) \
   static void init_e_##T(T *restrict out, const uint *restrict map, gs_op op,int dstride,\
                          int vn, int m_size,const uint **map_e, int start, int count,int acc) \
@@ -380,8 +369,8 @@ void gs_init_array(void *out, uint n, gs_dom dom, gs_op op,int acc)
 ------------------------------------------------------------------------------*/
 void gs_gather(void *out, const void *in, const unsigned vn,
                const uint *map, gs_dom dom, gs_op op, int dstride,
-               int mf_nt, int *mapf, int m_size,const uint **map_e,int start,
-               int count,int acc)
+               int mf_nt, int *mapf, int m_size,send_queue *queue,
+               int acc)
 {
 #define WITH_OP(T,OP) gather_##T##_##OP(out,in,1,map,dstride,mf_nt,mapf,vn,m_size,acc)
 #define WITH_DOMAIN(T) SWITCH_OP(T,op)
@@ -392,8 +381,8 @@ void gs_gather(void *out, const void *in, const unsigned vn,
 
 void gs_scatter(void *out, const void *in, const unsigned vn,
                 const uint *map, gs_dom dom,int dstride, int mf_nt, 
-                int* mapf,int m_size, const uint **map_e, send_queue queue,
-                int start, int count, int acc)
+                int* mapf,int m_size, send_queue *queue,
+                int acc)
 {
 #define WITH_DOMAIN(T) scatter_##T(out,1,in,1,map,dstride,mf_nt,mapf,vn,m_size,acc)
   SWITCH_DOMAIN(dom);
@@ -416,12 +405,12 @@ void gs_init(void *out, const unsigned vn, const uint *map,
 ------------------------------------------------------------------------------*/
 
 void gs_scatter_e_q(void *out, const void *in, const unsigned vn,
-                const uint *map, gs_dom dom,int dstride, int mf_nt, 
-                  int* mapf,int m_size, const uint **map_e, send_queue *queue,
-                  int start, int count, int acc)
+                    const uint *map, gs_dom dom,int dstride, int mf_nt, 
+                    int* mapf,int m_size, send_queue *queue,
+                    int acc)
 {
-#define WITH_DOMAIN(T) scatter_e_q_##T(out,1,in,1,map,dstride,mf_nt,mapf,vn,m_size,map_e,\
-  queue,start,count,acc)
+#define WITH_DOMAIN(T) scatter_e_q_##T(out,1,in,1,map,dstride,mf_nt,mapf,vn,m_size,\
+  queue,acc)
   SWITCH_DOMAIN(dom);
 #undef  WITH_DOMAIN
 }
@@ -431,12 +420,12 @@ void gs_scatter_e_q(void *out, const void *in, const unsigned vn,
   Elemental plain kernels; vn parameter ignored but present for consistent signatures
 ------------------------------------------------------------------------------*/
 void gs_gather_e(void *out, const void *in, const unsigned vn,
-               const uint *map, gs_dom dom, gs_op op, int dstride,
-               int mf_nt, int *mapf, int m_size,const uint **map_e,
-               int start, int count,int acc)
+                 const uint *map, gs_dom dom, gs_op op, int dstride,
+                 int mf_nt, int *mapf, int m_size, send_queue *queue,
+                 int acc)
 {
-#define WITH_OP(T,OP) gather_e_##T##_##OP(out,in,1,map,dstride,mf_nt,mapf,vn,m_size,map_e, \
-                                          start,count,acc)
+#define WITH_OP(T,OP) gather_e_##T##_##OP(out,in,1,map,dstride,mf_nt,mapf,vn,m_size, \
+                                          queue,acc)
 #define WITH_DOMAIN(T) SWITCH_OP(T,op)
   SWITCH_DOMAIN(dom);
 #undef  WITH_DOMAIN
@@ -445,12 +434,12 @@ void gs_gather_e(void *out, const void *in, const unsigned vn,
 
 
 void gs_scatter_e(void *out, const void *in, const unsigned vn,
-                const uint *map, gs_dom dom,int dstride, int mf_nt, 
-                  int* mapf,int m_size, const uint **map_e, send_queue *queue,
-                  int start, int count, int acc)
+                  const uint *map, gs_dom dom,int dstride, int mf_nt, 
+                  int* mapf,int m_size, send_queue *queue,
+                  int acc)
 {
-#define WITH_DOMAIN(T) scatter_e_##T(out,1,in,1,map,dstride,mf_nt,mapf,vn,m_size,map_e,\
-  start,count,acc)
+#define WITH_DOMAIN(T) scatter_e_##T(out,1,in,1,map,dstride,mf_nt,mapf,vn,m_size,\
+                                     queue,acc)
   SWITCH_DOMAIN(dom);
 #undef  WITH_DOMAIN
 }
@@ -505,8 +494,8 @@ void gs_gather_many(void *out, const void *in, const unsigned vn,
 
 void gs_scatter_many(void *out, const void *in, const unsigned vn,
                      const uint *map, gs_dom dom, int dstride,
-                     int mf_nt, int *mapf, int m_size, const uint **map_e, 
-                     send_queue queue,int start, int count,int acc)
+                     int mf_nt, int *mapf, int m_size, 
+                     send_queue *queue,int acc)
 {
 #define WITH_DOMAIN(T) scatter_##T(out,1,in,1,map,dstride,mf_nt,mapf,vn,m_size,acc)
   SWITCH_DOMAIN(dom);
@@ -529,7 +518,8 @@ void gs_init_many(void *out, const unsigned vn, const uint *map,
 ------------------------------------------------------------------------------*/
 void gs_gather_vec_to_many(void *out, const void *in, const unsigned vn,
                            const uint *map, gs_dom dom, gs_op op, int dstride,
-                           int mf_nt, int *mapf, int m_size,int acc)
+                           int mf_nt, int *mapf, int m_size, send_queue *queue,
+                           int acc)
 {
  #define WITH_OP(T,OP) \
   gather_##T##_##OP(out,in,vn,map,dstride,mf_nt,mapf,vn,m_size,acc)
@@ -541,8 +531,8 @@ void gs_gather_vec_to_many(void *out, const void *in, const unsigned vn,
 
 void gs_scatter_many_to_vec(void *out, const void *in, const unsigned vn,
                             const uint *map, gs_dom dom, int dstride,
-                            int mf_nt, int *mapf, int m_size, const uint **map_e, 
-                            send_queue queue,int start, int count,int acc)
+                            int mf_nt, int *mapf, int m_size, 
+                            send_queue *queue,int acc)
 {
 #define WITH_DOMAIN(T) \
   scatter_##T(out,vn,in,1,map,dstride,mf_nt,mapf,vn,m_size,acc)
@@ -552,8 +542,8 @@ void gs_scatter_many_to_vec(void *out, const void *in, const unsigned vn,
 
 void gs_scatter_vec_to_many(void *out, const void *in, const unsigned vn,
                             const uint *map, gs_dom dom,int dstride,
-                            int mf_nt, int *mapf, int m_size,const uint **map_e, 
-                            send_queue queue,int start, int count, int acc)
+                            int mf_nt, int *mapf, int m_size,
+                            send_queue *queue, int acc)
 {
 #define WITH_DOMAIN(T) \
   scatter_##T(out,1,in,vn,map,dstride,mf_nt,mapf,vn,m_size,acc)

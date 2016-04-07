@@ -40,13 +40,10 @@
 GS_DEFINE_DOM_SIZES()
 
 /* Function prototypes */
-void gs_invert_map(uint **map,int *mapf,int mf_nt);
+void gs_invert_map(uint **map,int *mapf,int mf_nt,int ***map_e,int data_size);
 void gs_flatmap_setup(const uint *map, int **mapf, int *mf_nt, int *m_size);
 static int map_size(const uint *map, int *t);
 static int fp_map_size(const uint *map);
-static void pw_needed_req(send_queue *queue,comm_req *req_queue,comm_req *req,
-                          const uint *restrict map,
-                          int*mapf,const uint **map_e,int start,int count);
 
 typedef enum { mode_plain, mode_vec, mode_many,
                mode_dry_run, mode_ele } gs_mode;
@@ -416,7 +413,8 @@ struct gs_remote {
 };
 
 typedef void setup_fun(struct gs_remote *r, struct gs_topology *top,
-                       const struct comm *comm, buffer *buf,int dstride);
+                       const struct comm *comm, buffer *buf,int dstride,
+                       int *largest_dependence0,int *largest_dependence1);
 
 /*------------------------------------------------------------------------------
   Pairwise Execution
@@ -434,6 +432,7 @@ struct pw_data {
   const uint *map[2];
   int *mapf[2];
   int *map_e[2];
+  int *map_e2[2];
   int mf_nt[2];
   int mf_size[2];
   int first_call;
@@ -533,8 +532,8 @@ static void pw_exec(
   /* fill send buffer */
   //  printf("mode: %d\n",mode);
   scatter_to_buf[mode](sendbuf,data,vn,pwd->map[send],dom,dstride,pwd->mf_nt[send],
-                       pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],
-                       &pwd->queue[send],1,1,acc);
+                       pwd->mapf[send],pwd->mf_size[send],
+                       &pwd->queue[send],acc);
 
   double* t = data;
 
@@ -551,8 +550,8 @@ static void pw_exec(
 
   /* gather using recv buffer */
   gather_from_buf[mode](data,buf,vn,pwd->map[recv],dom,op,dstride,pwd->mf_nt[recv],
-                        pwd->mapf[recv],pwd->mf_size[recv],pwd->map_e[recv],
-                        start,count,acc);
+                        pwd->mapf[recv],pwd->mf_size[recv],&pwd->queue[recv],
+                        acc);
 }
 
 /*------------------------------------------------------------------------------
@@ -574,6 +573,8 @@ static void pw_exec_irecv(
   char* sendbuf;
   int i;
   pwd->first_call = 0;
+  pwd->queue[send].last_packed = 0;
+  pwd->queue[recv].last_packed = 0;
 /* post receives */
   //  printf("r:pwe: %d %lX %lX %d:\n",pwd->comm[recv].n,(pwd->comm[recv].p),(pwd->comm[recv].size),pwd->comm[recv].total);
   //printf("s:pwe: %d %lX %lX %d:\n",pwd->comm[send].n,(pwd->comm[send].p),(pwd->comm[send].size),pwd->comm[send].total);
@@ -587,23 +588,28 @@ static void pw_exec_isend(
 {
   struct pw_data *pwd = execdata;
   static gs_scatter_fun *const scatter_to_buf[] =
-    { &gs_scatter, &gs_scatter_vec, &gs_scatter_many_to_vec, &scatter_noop, &gs_scatter_e };
+    { &gs_scatter, &gs_scatter_vec, &gs_scatter_many_to_vec, &scatter_noop, &gs_scatter_e_q };
   static gs_gather_fun *const gather_from_buf[] =
     { &gs_gather, &gs_gather_vec, &gs_gather_vec_to_many, &gather_noop, &gs_gather };
   const unsigned recv = 0^transpose, send = 1^transpose;
   unsigned unit_size = vn*gs_dom_size[dom];
   const uint *p, *pe, *size;
-  int i;
+  int i,k;
   char *sendbuf;
   const struct pw_comm_data *c = &pwd->comm[recv];
-
+  int *pack_queue;
+  int **map_e;
   size=c->size;
+
 
   sendbuf = buf+unit_size*pwd->comm[recv].total;
 
+  fill_pack_queue_from_buf(&pwd->queue[send],pwd->map_e[send],start+count,pwd->mf_nt[send]);
+
+  //if(comm_gbl_id==1) printf("Before scatter to buf\n");
   scatter_to_buf[mode](sendbuf,data,vn,pwd->map[send],dom,dstride,pwd->mf_nt[send],
-                       pwd->mapf[send],pwd->mf_size[send],pwd->map_e[send],
-                       &pwd->queue[send],start,count,acc);
+                       pwd->mapf[send],pwd->mf_size[send],
+                       &pwd->queue[send],comm_gbl_id);
 
   
 #pragma acc update host(sendbuf[0:unit_size*bufSize/2]) if(acc)
@@ -614,18 +620,18 @@ static void pw_exec_isend(
 
   //
 
-  /* for(i=0;i<pwd->queue[send].queue_length;i++) { */
-  /*   pw_exec_single_send(sendbuf,unit_size,comm,&pwd->comm[send], */
-  /*                       &pwd->req[pwd->comm[recv].n+pwd->queue[send].queue[i]], */
-  /*                       pwd->queue[send].queue[i], */
-  /*                       pwd->queue[send].buf_offset[pwd->queue[send].queue[i]]); */
-  /* } */
-
+  for(i=0;i<pwd->queue[send].queue_length;i++) {
+    pw_exec_single_send(sendbuf,unit_size,comm,&pwd->comm[send],
+                        &pwd->req[pwd->comm[recv].n+pwd->queue[send].queue[i]],
+                        pwd->queue[send].queue[i],
+                        pwd->queue[send].buf_offset[pwd->queue[send].queue[i]]);
+  }
+  
   //Reset queue
-  /* for(i=0;i<pwd->queue[send].queue_length;i++) { */
-  /*   pwd->queue[send].queue[i] = 0; */
-  /* } */
-  /* pwd->queue[send].queue_length = 0; */
+  for(i=0;i<pwd->queue[send].queue_length;i++) {
+    pwd->queue[send].queue[i] = 0;
+  }
+  pwd->queue[send].queue_length = 0;
 
 }
 
@@ -645,61 +651,88 @@ static void pw_exec_wait(
   int i,j,k,nreq,prior_indices[pwd->comm[0].n],req_index;
   const uint *restrict map = pwd->map[recv];
   int *mapf = pwd->mapf[recv];
-  const uint **map_e = pwd->map_e[recv];
+  const uint **map_e = pwd->map_e2[recv];
 
   sendbuf = buf+unit_size*pwd->comm[recv].total;
   /* post sends on first call */
   if(pwd->first_call==0) {
-    pw_exec_sends(sendbuf,unit_size,comm,&pwd->comm[send],
-                  &pwd->req[pwd->comm[recv].n]);
+       /* pw_exec_sends(sendbuf,unit_size,comm,&pwd->comm[send], */
+       /*               &pwd->req[pwd->comm[recv].n]); */
     pwd->first_call = 1;
     pwd->req_complete = 0;
     for(i=0;i<pwd->comm[0].n+pwd->comm[1].n;i++){ 
       pwd->prior_req[i] = 0;
     }
+
   }
 
   //Only do the search / wait if we haven't completed all buffers
-  if(pwd->req_complete<pwd->comm[0].n){
-    nreq = 0;
-    for(i=start;i<start+count;i++){
-      for(j=0;j<mapf[map_e[i][0]+1];j++){
-        req_index = pwd->queue[recv].map_to_buf[map[mapf[map_e[i][0]]+j+1]];
+  /* if(pwd->req_complete<pwd->comm[0].n){ */
+  /*   nreq = 0; */
+  /*   for(i=start;i<start+count;i++){ */
+  /*     for(j=0;j<mapf[map_e[i][0]+1];j++){ */
+  /*       req_index = pwd->queue[recv].map_to_buf[map[mapf[map_e[i][0]]+j+1]]; */
 
-        for(k=0;k<pwd->req_complete;k++){
-          if(req_index==pwd->prior_req[k]){
-            req_index = -1;
-            break;
-          }
-        }
-        if(req_index!=-1){
-          pwd->req_queue[nreq] = pwd->req[req_index];
-          pwd->req[req_index]  = MPI_REQUEST_NULL;
-          pwd->prior_req[nreq] = req_index;
-          pwd->req_complete++;
-          nreq++;
-        }
-      }
-    }
+  /*       for(k=0;k<pwd->req_complete;k++){ */
+  /*         if(req_index==pwd->prior_req[k]){ */
+  /*           req_index = -1; */
+  /*           break; */
+  /*         } */
+  /*       } */
+  /*       if(req_index!=-1){ */
+  /*         pwd->req_queue[nreq] = pwd->req[req_index]; */
+  /*         pwd->req[req_index]  = MPI_REQUEST_NULL; */
+  /*         pwd->prior_req[nreq] = req_index; */
+  /*         pwd->req_complete++; */
+  /*         nreq++; */
+  /*       } */
+  /*     } */
+  /*   } */
 
-    comm_wait(pwd->req_queue,nreq);
+  /*   comm_wait(pwd->req_queue,nreq); */
 
-  }
-
-  /* printf("num buff: %d %d\n",nreq,pwd->comm[0].n+pwd->comm[1].n); */
-  /* if(nreq>0) { */
-  /*   comm_wait(pwd->req,nreq*(pwd->comm[0].n+pwd->comm[1].n)); */
   /* } */
-  //Might need to reset pwd->req?!
 
+  /* nreq=0; */
+  /* for(i=start;i<start+count;i++){ */
+  /*   //Check if the data index is requested */
+  /*   req_index = pwd->queue[recv].map_to_buf2[i]; */
+  /*   printf("req_index: %d\n",req_index); */
+
+  /*   if(pwd->queue[recv].map_to_buf2[i]!=-1){ */
+  /*     for(k=0;k<pwd->req_complete;k++){ */
+  /*       if(req_index==pwd->prior_req[k]){ */
+  /*         req_index = -1; */
+  /*         break; */
+  /*       } */
+  /*     } */
+  /*     if(req_index!=-1){ */
+  /*       printf("added to req: %d %d id %d\n",nreq,req_index,comm_gbl_id); */
+  /*       pwd->req_queue[nreq] = pwd->req[req_index]; */
+  /*       pwd->req[req_index]  = MPI_REQUEST_NULL; */
+  /*       pwd->prior_req[nreq] = req_index; */
+  /*       pwd->req_complete++; */
+  /*       nreq++; */
+  /*     } */
+  /*   } */
+  /* } */
+  /* printf("nreq: %d %d\n",nreq,comm_gbl_id); */
+  /* comm_wait(pwd->req_queue,nreq); */
+  /* printf("after: %d %d\n",nreq,comm_gbl_id); */
+
+  comm_wait(pwd->req,(pwd->comm[0].n+pwd->comm[1].n));
 #pragma acc update device(buf[0:unit_size*bufSize/2]) if(acc)
-
 //#pragma update device(pwd->map[recv],pwd->mapf[recv])
 
+  fill_pack_queue_post(&pwd->queue[recv],pwd->map[recv],
+                       pwd->mapf[recv],
+                       start+count,pwd->mf_nt[recv]);
+
+  //  if(comm_gbl_id==0) printf("Before gather from buf\n");
   /* gather using recv buffer */
   gather_from_buf[mode](data,buf,vn,pwd->map[recv],dom,op,dstride,pwd->mf_nt[recv],
-                        pwd->mapf[recv],pwd->mf_size[recv],pwd->map_e[recv],
-                        start,count,comm_gbl_id);
+                        pwd->mapf[recv],pwd->mf_size[recv],&pwd->queue[recv],
+                        comm_gbl_id);
   //Reset buf_current
   for(i=0;i<pwd->comm[0].n;i++){
     pwd->queue[0].buf_current[i] = 0;
@@ -709,23 +742,6 @@ static void pw_exec_wait(
   }
 }
 
- static void pw_needed_req(send_queue *queue,comm_req *req_queue,comm_req *req,
-                           const uint *restrict map,
-                           int*mapf,const uint **map_e,int start,int count)
-{
-  int nreq,i,j;
-
-  nreq = 0;
-  for(i=start;i<start+count;i++){
-    for(j=0;j<mapf[map_e[i][0]+1];j++){
-      printf("needed_req: %d %d\n",queue->map_to_buf[map[mapf[map_e[i][0]]+j+1]],nreq);
-      *(req_queue+nreq) = req[queue->map_to_buf[map[mapf[map_e[i][0]]+j+1]]];
-      nreq++;
-    }
-  }
-
-  queue->queue_length = nreq;
-}
 /*------------------------------------------------------------------------------
   Pairwise setup
 ------------------------------------------------------------------------------*/
@@ -790,7 +806,9 @@ static const uint *pw_map_setup(struct array *sh, buffer *buf, uint *mem_size)
 }
 
 static struct pw_data *pw_setup_aux(struct array *sh, buffer *buf,
-                                    uint *mem_size,int data_size,struct comm *comm)
+                                    uint *mem_size,int data_size,
+                                    struct comm *comm,int *largest_dependence0,
+                                    int *largest_dependence1)
 {
   int i;
   struct pw_data *pwd = tmalloc(struct pw_data,1);
@@ -803,9 +821,24 @@ static struct pw_data *pw_setup_aux(struct array *sh, buffer *buf,
   /* Get flattened map */
   gs_flatmap_setup(pwd->map[0],&(pwd->mapf[0]),&(pwd->mf_nt[0]),&(pwd->mf_size[0]));
 
-  pw_send_queue_setup(&pwd->comm[0],&pwd->queue[0],pwd->map[0],pwd->mapf[0],pwd->mf_nt[0]);
+  gs_element_map_setup_pw(pwd->map[0],pwd->mapf[0],&(pwd->map_e[0]),pwd->mf_nt[0],
+                          largest_dependence0);
+
+  gs_element_map_setup2(pwd->map[0],pwd->mapf[0],&(pwd->map_e2[0]),data_size);
+
+  /* if(comm->id==1){ */
+  /* printf("MAP1\n"); */
+  /* print_map(pwd->map[0],pwd->mf_size[0]); */
+  /* printf("MAPF\n"); */
+  /* print_map(pwd->mapf[0],2*pwd->mf_nt[0]); */
+  /* printf("MAP_E\n"); */
+  /* print_map_e(pwd->map_e[0],pwd->mf_nt[0]); */
+  /* } */
+
+  pw_send_queue_setup(&pwd->comm[0],&pwd->queue[0],pwd->map[0],pwd->mapf[0],pwd->mf_nt[0],data_size);
   /* Get element map */
-  gs_element_map_setup(pwd->map[0],pwd->mapf[0],&(pwd->map_e[0]),data_size);
+  //  gs_invert_map(&(pwd->map[0]),pwd->mapf[0],pwd->mf_nt[0],&(pwd->map_e[0]),data_size);
+
 
   /* default behavior: send only locally unflagged data */
   *mem_size+=pw_comm_setup(&pwd->comm[1],sh, FLAGS_LOCAL, buf);
@@ -813,18 +846,25 @@ static struct pw_data *pw_setup_aux(struct array *sh, buffer *buf,
 
   /* Get flattened map */
   gs_flatmap_setup(pwd->map[1],&(pwd->mapf[1]),&(pwd->mf_nt[1]),&(pwd->mf_size[1]));
-  pw_send_queue_setup(&pwd->comm[1],&pwd->queue[1],pwd->map[1],pwd->mapf[1],pwd->mf_nt[1]);
+  
   
   /* Get element map */
-  gs_element_map_setup(pwd->map[1],pwd->mapf[1],&(pwd->map_e[1]),data_size);
-  if(comm->id==0){
-  /* printf("MAP\n"); */
+  //gs_invert_map(&(pwd->map[1]),pwd->mapf[1],pwd->mf_nt[1],&(pwd->map_e[1]),data_size);
+  gs_element_map_setup_pw(pwd->map[1],pwd->mapf[1],&(pwd->map_e[1]),pwd->mf_nt[1],
+                        largest_dependence1);
+
+  gs_element_map_setup2(pwd->map[1],pwd->mapf[1],&(pwd->map_e2[1]),data_size);
+
+
+  /* if(comm->id==1){ */
+  /* printf("MAP2\n"); */
   /* print_map(pwd->map[1],pwd->mf_size[1]); */
   /* printf("MAPF\n"); */
   /* print_map(pwd->mapf[1],2*pwd->mf_nt[1]); */
   /* printf("MAP_E\n"); */
-  /* print_map_e(pwd->map_e[1],data_size); */
-  }
+  /* print_map_e(pwd->map_e[1],pwd->mf_nt[1]); */
+  /* } */
+  pw_send_queue_setup(&pwd->comm[1],&pwd->queue[1],pwd->map[1],pwd->mapf[1],pwd->mf_nt[1],data_size);  
   pwd->req = tmalloc(comm_req,pwd->comm[0].n+pwd->comm[1].n);
   //Maybe reduce size of below to only comm[0].n
   pwd->req_queue = tmalloc(comm_req,pwd->comm[0].n+pwd->comm[1].n);
@@ -849,9 +889,11 @@ static void pw_free(struct pw_data *data)
 }
 
 static void pw_setup(struct gs_remote *r, struct gs_topology *top,
-                     const struct comm *comm, buffer *buf,int dstride)
+                     const struct comm *comm, buffer *buf,int dstride,
+                     int *largest_dependence0,int *largest_dependence1)
 {
-  struct pw_data *pwd = pw_setup_aux(&top->sh,buf, &r->mem_size,dstride,comm);
+  struct pw_data *pwd = pw_setup_aux(&top->sh,buf, &r->mem_size,dstride,comm,
+                                     largest_dependence0,largest_dependence1);
   r->buffer_size      = pwd->buffer_size;
   r->data             = pwd;
   r->exec             = (exec_fun*)&pw_exec;
@@ -921,15 +963,15 @@ static void cr_exec(
     if(k==0)
       scatter_user_to_buf[mode](sendbuf,data,vn,stage[0].scatter_map,dom,dstride,
                                 stage[0].s_nt,stage[0].scatter_mapf,stage[0].s_size,
-                                stage[0].scatter_mapf,&stage[0].queue,1,1,acc);
+                                &stage[0].queue,acc);
     else
       //FIXME : fix map_e argument in this routine
       scatter_buf_to_buf[mode](sendbuf,buf_old,vn,stage[k].scatter_map,dom,dstride,
                                stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
-                               stage[k].scatter_mapf,&stage[k].queue,1,1,acc),
+                               &stage[k].queue,acc),
         gather_buf_to_buf [mode](sendbuf,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
                                  stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,
-                                 stage[k].gather_mapf,1,1,acc);
+                                 &stage[k].queue,acc);
     //Need to update gather vec and scatter vec!
 #pragma acc update host(buf[0:unit_size*bufSize]) if(acc)
     comm_isend(&req[0],comm,sendbuf,unit_size*stage[k].size_s,
@@ -941,11 +983,11 @@ static void cr_exec(
   }
   scatter_buf_to_user[mode](data,buf_old,vn,stage[k].scatter_map,dom,dstride,
                             stage[k].s_nt,stage[k].scatter_mapf,
-                            stage[k].s_size,stage[k].scatter_mapf,&stage[k].queue,
-                            1,1,acc);
+                            stage[k].s_size,&stage[k].queue,
+                            acc);
   gather_buf_to_user [mode](data,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
                             stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,
-                            stage[k].gather_mapf,1,1,acc);
+                            &stage[k].queue,acc);
 }
 
 /*------------------------------------------------------------------------------
@@ -1019,14 +1061,14 @@ static void cr_exec_isend(
     if(k==0)
       scatter_user_to_buf[mode](sendbuf,data,vn,stage[0].scatter_map,dom,dstride,
                                 stage[0].s_nt,stage[0].scatter_mapf,stage[0].s_size,
-                                stage[0].scatter_mapf,&stage[0].queue,1,1,acc);
+                                &stage[0].queue,acc);
     else
       scatter_buf_to_buf[mode](sendbuf,buf_old,vn,stage[k].scatter_map,dom,dstride,
                                stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
-                               stage[k].scatter_mapf,&stage[k].queue,1,1,acc),
+                               &stage[k].queue,acc),
         gather_buf_to_buf [mode](sendbuf,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
                                  stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,
-                                 stage[k].gather_mapf,1,1,acc);
+                                 &stage[k].queue,acc);
     //Need to update gather vec and scatter vec!
 #pragma acc update host(buf[0:unit_size*bufSize]) if(acc)
     
@@ -1036,10 +1078,10 @@ static void cr_exec_isend(
   }
   scatter_buf_to_user[mode](data,buf_old,vn,stage[k].scatter_map,dom,dstride,
                             stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
-                            stage[k].scatter_mapf,&stage[k].queue,1,1,acc);
+                            &stage[k].queue,acc);
   gather_buf_to_user [mode](data,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
                             stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,
-                            stage[k].gather_mapf,start,count,acc);
+                            &stage[k].queue,acc);
 
 }
 
@@ -1078,10 +1120,10 @@ static void cr_exec_wait(
   }
   scatter_buf_to_user[mode](data,buf_old,vn,stage[k].scatter_map,dom,dstride,
                             stage[k].s_nt,stage[k].scatter_mapf,stage[k].s_size,
-                            stage[k].scatter_mapf,&stage[k].queue,1,1,acc);
+                            &stage[k].queue,acc);
   gather_buf_to_user [mode](data,buf_old,vn,stage[k].gather_map ,dom,op,dstride,
                             stage[k].g_nt,stage[k].gather_mapf,stage[k].g_size,
-                            stage[k].gather_mapf,1,1,acc);
+                            &stage[k].queue,acc);
 }
 
 /*------------------------------------------------------------------------------
@@ -1391,7 +1433,8 @@ static void cr_free(struct cr_data *data)
 }
 
 static void cr_setup(struct gs_remote *r, struct gs_topology *top,
-                     const struct comm *comm, buffer *buf)
+                     const struct comm *comm, buffer *buf,int dstride,
+                     int *array1,int *array2)
 {
   struct cr_data *crd = cr_setup_aux(&top->sh,comm,buf, &r->mem_size);
   r->buffer_size = crd->buffer_size;
@@ -1437,8 +1480,8 @@ static void allreduce_exec(
 
   scatter_to_buf[mode](buf,data,vn,ard->map_to_buf[transpose],dom,dstride,
                        ard->mt_nt[transpose],ard->map_to_buf_f[transpose],
-		       ard->mt_size[transpose],ard->map_to_buf_f[transpose],
-                       &ard->queue[transpose],1,1,acc);
+		       ard->mt_size[transpose],
+                       &ard->queue[transpose],acc);
 
   /* all reduce */
 #pragma acc update host(buf[0:vn*unit_size*bufSize]) if(acc)
@@ -1448,8 +1491,8 @@ static void allreduce_exec(
   //FIXME - Update ard->map_from_buf_f above and below. Is placeholder
   scatter_from_buf[mode](data,buf,vn,ard->map_from_buf[transpose],dom,dstride,
                          ard->mf_nt[transpose],ard->map_from_buf_f[transpose],
-			 ard->mf_size[transpose],ard->map_from_buf_f[transpose],
-                         &ard->queue[transpose],1,1,acc);
+			 ard->mf_size[transpose],
+                         &ard->queue[transpose],acc);
 
 }
 
@@ -1513,7 +1556,8 @@ static void allreduce_free(struct allreduce_data *ard)
 }
 
 static void allreduce_setup(struct gs_remote *r, struct gs_topology *top,
-                            const struct comm *comm, buffer *buf,int dstride)
+                            const struct comm *comm, buffer *buf,int dstride,
+                            int *array1,int *array2)
 {
   struct allreduce_data *ard
     = allreduce_setup_aux(&top->pr,top->total_shared, &r->mem_size);
@@ -1549,9 +1593,10 @@ static void dry_run_time(double times[3], const struct gs_remote *r,
 }
 
 static void auto_setup(struct gs_remote *r, struct gs_topology *top,
-                       const struct comm *comm, buffer *buf,int dstride)
+                       const struct comm *comm, buffer *buf,int dstride,
+                       int *array1, int *array2)
 {
-  pw_setup(r, top,comm,buf,dstride);
+  pw_setup(r, top,comm,buf,dstride,array1,array2);
 
   if(comm->np>1) {
     const char *name = "pairwise";
@@ -1579,11 +1624,11 @@ static void auto_setup(struct gs_remote *r, struct gs_topology *top,
 
     DRY_RUN(0, r, "pairwise times (avg, min, max)");
 
-    cr_setup(&r_alt, top,comm,buf);
+    cr_setup(&r_alt, top,comm,buf,dstride,array1,array2);
     DRY_RUN_CHECK(      "crystal router                ", "crystal router");
     
     if(top->total_shared<100000) {
-      allreduce_setup(&r_alt, top,comm,buf,dstride);
+      allreduce_setup(&r_alt, top,comm,buf,dstride,array1,array2);
       DRY_RUN_CHECK(    "all reduce                    ", "allreduce");
     }
 
@@ -1631,6 +1676,7 @@ gs_data {
   int fp_size;
   int mf_nt[2];
   int dstride;
+  int *largest_dependence[2];
   int u_size;
   uint handle_size;
 };
@@ -1663,8 +1709,8 @@ static void gs_aux(
 
   local_gather [mode](u,u,vn,gsh->map_local[0^transpose],dom,op,gsh->dstride,
                       gsh->mf_nt[0^transpose],gsh->map_localf[0^transpose],
-		      gsh->m_size[0^transpose],gsh->map_local_e[0^transpose],
-                      1,1,acc);
+		      gsh->m_size[0^transpose],&gsh->queue[0^transpose],
+                      acc);
 
 
   if(transpose==0) init[mode](u,vn,gsh->flagged_primaries,dom,op,gsh->dstride,
@@ -1675,8 +1721,8 @@ static void gs_aux(
 
   local_scatter[mode](u,u,vn,gsh->map_local[1^transpose],dom,gsh->dstride,
                       gsh->mf_nt[1^transpose],gsh->map_localf[1^transpose],
-		      gsh->m_size[1^transpose],gsh->map_local_e[1^transpose],
-                      &gsh->queue[1^transpose],1,1,acc);
+		      gsh->m_size[1^transpose],
+                      &gsh->queue[1^transpose],acc);
 
 }
 
@@ -1706,7 +1752,8 @@ static void gs_aux_irecv(
     acc = 1;
   }
 #endif
-
+  gsh->queue[0^transpose].last_packed = 0;
+  gsh->queue[1^transpose].last_packed = 0;
   gsh->r.exec_irecv(u,mode,vn,dom,op,transpose,gsh->r.data,&gsh->comm,buf->ptr,gsh->dstride,acc,gsh->r.buffer_size,0,0);
 }
 
@@ -1715,6 +1762,7 @@ static void gs_aux_isend(
   struct gs_data *gsh, buffer *buf,int start,int count)
 {
   int acc, i;
+  int **map_e;
 
   acc = 0;
 #ifdef _OPENACC
@@ -1731,13 +1779,15 @@ static void gs_aux_isend(
     { &gs_init, &gs_init_vec, &gs_init_many, &init_noop, &gs_init_e };
   if(!buf) buf = &static_buffer;
 
+  /* //Need to write gather_e and init_e!! */
 
-  //Need to write gather_e and init_e!!
+  fill_pack_queue(&(gsh->queue[0^transpose]),gsh->map_local_e[0^transpose],
+                  start+count,gsh->mf_nt[0^transpose]);
+
   local_gather [mode](u,u,vn,gsh->map_local[0^transpose],dom,op,gsh->dstride,
                       gsh->mf_nt[0^transpose],gsh->map_localf[0^transpose],
-		      gsh->m_size[0^transpose],gsh->map_local_e[0^transpose],
-                      start,count,acc);
-
+                      gsh->m_size[0^transpose],&gsh->queue[0^transpose],
+                      comm_gbl_id);
 
   if(transpose==0) init[mode](u,vn,gsh->flagged_primaries,dom,op,gsh->dstride,
 			      gsh->fp_size,gsh->fp_map_e,start,count,acc);
@@ -1768,11 +1818,16 @@ static void gs_aux_wait(
   if(!buf) buf = &static_buffer;
 
   gsh->r.exec_wait(u,mode,vn,dom,op,transpose,gsh->r.data,&gsh->comm,buf->ptr,gsh->dstride,acc,gsh->r.buffer_size,start,count);
+  
+
+  fill_pack_queue_post(&(gsh->queue[1^transpose]),gsh->map_local[1^transpose],
+                  gsh->map_localf[1^transpose],
+                  start+count,gsh->mf_nt[1^transpose]);
 
   local_scatter[mode](u,u,vn,gsh->map_local[1^transpose],dom,gsh->dstride,
                       gsh->mf_nt[1^transpose],gsh->map_localf[1^transpose],
-		      gsh->m_size[1^transpose],gsh->map_local_e[1^transpose],
-                      &gsh->queue[1^transpose],start,count,acc);
+		      gsh->m_size[1^transpose],
+                      &gsh->queue[1^transpose],comm_gbl_id);
 
 }
 
@@ -1862,21 +1917,42 @@ static uint local_setup(struct gs_data *gsh, const struct array *nz)
   s = 0;
   gsh->map_local[0] = local_map(nz,1, &s);
   gs_flatmap_setup(gsh->map_local[0],&(gsh->map_localf[0]),&(gsh->mf_nt[0]),&(gsh->m_size[0]));
-  gs_invert_map(&(gsh->map_local[0]),gsh->map_localf[0],gsh->mf_nt[0]);
+  //gs_invert_map(&(gsh->map_local[0]),gsh->map_localf[0],gsh->mf_nt[0],&(gsh->map_local_e[0]),gsh->dstride);
   /* Get element map */
-  gs_element_map_setup(gsh->map_local[0],gsh->map_localf[0],&(gsh->map_local_e[0]),gsh->dstride);
+  gs_element_map_setup3(gsh->map_local[0],gsh->map_localf[0],&(gsh->map_local_e[0]),gsh->dstride,gsh->mf_nt[0],&gsh->largest_dependence[0]);
+  simple_queue_setup(&gsh->queue[0],gsh->mf_nt[0]);
 
+  /* if(comm_gbl_id==1){ */
+  /* printf("MAP\n"); */
+  /* print_map(gsh->map_local[0],gsh->m_size[0]); */
+  /* printf("MAPF\n"); */
+  /* print_map(gsh->map_localf[0],2*gsh->mf_nt[0]); */
+  /* printf("MAP_E\n"); */
+  /* print_map_e(gsh->map_local_e[0],gsh->mf_nt[0]); */
+  /* } */
   mem_size += s;
   //fprintf(stderr,"%s: map[0:%d]     -> %lX : %lX\n",hname,s/4,gsh->map_local[0],((void*)gsh->map_local[0])+s);
   s = 0;
   gsh->map_local[1] = local_map(nz,0, &s);
   gs_flatmap_setup(gsh->map_local[1],&(gsh->map_localf[1]),&(gsh->mf_nt[1]),&(gsh->m_size[1]));
-  print_map(gsh->map_local[1],30);
-  gs_invert_map(&(gsh->map_local[1]),gsh->map_localf[1],gsh->mf_nt[1]);
-  print_map(gsh->map_local[1],30);
-  /* Get element map */
-  gs_element_map_setup(gsh->map_local[1],gsh->map_localf[1],&(gsh->map_local_e[1]),gsh->dstride);
+  simple_queue_setup(&gsh->queue[1],gsh->mf_nt[1]);
+  //  print_map(gsh->map_local[1],30);
+  //gs_invert_map(&(gsh->map_local[1]),gsh->map_localf[1],gsh->mf_nt[1],&(gsh->map_local_e[1]),gsh->dstride);
+  //  print_map(gsh->map_local[1],30);
 
+  /* Get element map */
+  gs_element_map_setup3(gsh->map_local[1],gsh->map_localf[1],&(gsh->map_local_e[1]),gsh->dstride,gsh->mf_nt[1],&gsh->largest_dependence[1]);
+
+  /* if(comm_gbl_id==1){ */
+  /* printf("MAP\n"); */
+  /* print_map(gsh->map_local[1],gsh->m_size[1]); */
+  /* printf("MAPF\n"); */
+  /* print_map(gsh->map_localf[1],2*gsh->mf_nt[1]); */
+  /* printf("MAP_E\n"); */
+  /* print_map_e(gsh->map_local_e[1],gsh->mf_nt[1]); */
+  /* } */
+
+  //  print_map_e(gsh->map_local_e[1],20);
   mem_size += s;
   //fprintf(stderr,"%s: t_map[0:%d]   -> %lX : %lX\n",hname,s/4,gsh->map_local[1],((void*)gsh->map_local[1])+s);
   s = 0;
@@ -1912,7 +1988,8 @@ static void gs_setup_aux(struct gs_data *gsh, const slong *id, uint n,
   if(verbose && gsh->comm.id==0)
     printf("gs_setup: %ld unique labels shared\n",(long)top.total_shared);
 
-  remote_setup[method](&gsh->r, &top,&gsh->comm,&cr.data,gsh->dstride);
+  remote_setup[method](&gsh->r, &top,&gsh->comm,&cr.data,gsh->dstride,
+                       gsh->largest_dependence[0],gsh->largest_dependence[1]);
   gsh->handle_size += gsh->r.mem_size;
 
   if(verbose) { /* report memory usage */
@@ -1994,61 +2071,85 @@ void gs_flatmap_setup(const uint *map, int **mapf, int *mf_nt, int *m_size)
 }
 
 
-void gs_element_map_setup(const uint *map, int *mapf, int ***map_e,int data_size)
+void gs_element_map_setup(const uint *map, int *mapf, int ***map_e,int data_size,int mf_nt)
 {
   uint    i,j,k,current_map_index,current_mapf_index;
   int     last_i;
-
+  int     largest_tmp,first_loc,current_tmp;
+  int     list_of_largest[mf_nt];
+  int     list_of_first_loc[data_size];
   *map_e = (int**)malloc(data_size*sizeof(int*));
   current_map_index = 0;
   current_mapf_index = 0;
   last_i = 0;
   for(i=0;i<data_size;i++){
     (*map_e)[i] = (int*)malloc(2*sizeof(int));
-    if(i!=map[current_map_index]) {
-      // We use -1 to represent a value that does not take part in the gs routine
-      (*map_e)[i][0] = -1;
-      //map_e[current_map_index,0] = -1;
-    } else {
-      //Store the current i in the previously given arrays so that we can
-      //jump to this i when we land in a spot where data did not need
-      //to be calculated. 
-      for(j=last_i;j<i;j++){
-        (*map_e)[j][1] = i;
-      }
-      //mapf[current_mapf_index] is an index into map of the initial location
-      // we want map[mapf[map_e[i,0]]] to be the proper location in map
-      (*map_e)[i][0] = current_mapf_index;
-      last_i     = i;
-      //mapf[current_mapf_index+1] gives us the multiplicity (-1) of
-      // the map destinations. The extra +2 is due to the -1 terminator 
-      // in map and the -1 in the definition of multiplicity
-      current_map_index = current_map_index + mapf[current_mapf_index+1]+2;
-
-      // increment by 2 because mapf stores location, then number
-      current_mapf_index += 2;
-    }
-  }
-
-  for(j=last_i;j<i;j++){
-    (*map_e)[j][1] = -2;
-  }
-
-  return;
-}
-
-//Simple function to put the largest array index in each group at the top of the map
-void gs_invert_map(uint **map,int *mapf,int mf_nt)
-{
-  int largest_tmp,i,j,largest_loc,current_tmp;
-
-  //Initialize all map_e to -1
-  for(i=0;i<data_size;i++){
     (*map_e)[i][0] = -1;
   }
   for(i=0;i<mf_nt;i++) {
     largest_tmp = -1;
+    first_loc   = map[mapf[i*2]];
+    for(j=0;j<mapf[i*2+1]+1;j++){
+      current_tmp = map[mapf[i*2]+j];
+      if(current_tmp>largest_tmp){
+        largest_tmp= current_tmp;
+      }
+    }
+    (*map_e)[largest_tmp][0] = i*2;
+    list_of_largest[i] = largest_tmp;
+  }
+  for(i=1;i<mf_nt;i++){
+    largest_tmp = list_of_largest[i];
+    j=i-1;
+    while((largest_tmp<list_of_largest[j])&&(j>=0)){
+      list_of_largest[j+1] = list_of_largest[j];
+      j=j-1;
+      if(j==-1) break;
+    }
+    list_of_largest[j+1] = largest_tmp;
+  }
+
+  j=0;
+  for(i=0;i<data_size;i++){
+    if(j<mf_nt) {
+      if(i<list_of_largest[j]) {
+        (*map_e)[i][1] = list_of_largest[j];
+      } else {
+        j++;
+        if(j<mf_nt) {
+          (*map_e)[i][1] = list_of_largest[j];
+        } else {
+          (*map_e)[i][1] = -2;
+        }
+      }
+    } else {
+      (*map_e)[i][1] = -2;
+    }
+  }
+  
+  return;
+}
+
+//Simple function to put the largest array index in each group at the top of the map
+void gs_invert_map(uint **map,int *mapf,int mf_nt,int ***map_e,int data_size)
+{
+  int largest_tmp,i,j,largest_loc,current_tmp,first_loc;
+  int last_data_point = 0;
+  int list_of_largest[data_size];
+
+  *map_e = (int**)malloc(data_size*sizeof(int*));
+  first_loc = -1;
+  //Initialize all map_e to -1
+  for(i=0;i<data_size;i++){
+    (*map_e)[i] = (int*)malloc(3*sizeof(int));
+    (*map_e)[i][0] = -1;
+  }
+    
+
+  for(i=0;i<mf_nt;i++) {
+    largest_tmp = -1;
     largest_loc = 0;
+    first_loc   = *(*map+mapf[i*2]);
     for(j=0;j<mapf[i*2+1]+1;j++){
       current_tmp = *(*map+mapf[i*2]+j);
       if(current_tmp>largest_tmp){
@@ -2059,10 +2160,30 @@ void gs_invert_map(uint **map,int *mapf,int mf_nt)
 
     *(*map+mapf[i*2]+largest_loc) = *(*map+mapf[i*2]);
     *(*map+mapf[i*2]) = largest_tmp;
-    // Store the largest of a group's mapf_location
-    (*map_e)[largest_tmp][0] = i; //or +1?
+    // Store the largest of a group's mapf_loca
+    (*map_e)[largest_tmp][0] = i*2; 
+    (*map_e)[largest_tmp][2] = first_loc;
+    // Store all of the largest in a sorted list
+    j = i-1;
+    while (j>=0 && list_of_largest[j] > largest_tmp){
+      list_of_largest[j+1] = list_of_largest[j];
+      j = j-1;
+    }
+    list_of_largest[j+1] = largest_tmp;
+  }
+  last_data_point = 0;
+  for(i=0;i<mf_nt;i++){
+
+    for(j=last_data_point;j<list_of_largest[i];j++){
+      (*map_e)[j][1] = list_of_largest[i];
+    }
+    last_data_point = list_of_largest[i];
+  }
+  for(j=last_data_point;j<data_size;j++){
+    (*map_e)[j][1] = -2;
   }
 
+  
   return;
 
 }
@@ -2110,7 +2231,6 @@ void gs_element_map_setup2(const uint *map, int *mapf, int ***map_e,int data_siz
   return;
 }
 
-
 void gs_fp_element_map_setup(const uint *map, int ***map_e,int data_size)
 {
   uint    i,j,k,current_map_index,current_mapf_index;
@@ -2122,14 +2242,16 @@ void gs_fp_element_map_setup(const uint *map, int ***map_e,int data_size)
 
   for(i=0;i<data_size;i++){
     (*map_e)[i] = (int*)malloc(2*sizeof(int));
+  }
+
+  for(i=0;i<data_size;i++){
     //If we reached a -1, then we're at the end of the map
     if(map[current_map_index]==-1) {
       (*map_e)[i][0] = -1;
       //Fill up the all the remaining data, since we are at the end
       for(j=last_i;j<data_size-last_i;j++){
-        (*map_e)[j] = (int*)malloc(2*sizeof(int));
         (*map_e)[j][0] = -1;
-        (*map_e)[j][1] = data_size+1;
+        (*map_e)[j][1] = data_size+2;
       }
       break;
     }
@@ -2156,17 +2278,183 @@ void gs_fp_element_map_setup(const uint *map, int ***map_e,int data_size)
   return;
 }
 
+void gs_element_map_setup3(const uint *map, int *mapf, int ***map_e,
+                           int data_size,int mf_nt,int **largest_dependence)
+{
+  uint    i,j,k,current_map_index,current_mapf_index;
+  int     last_i,largest_tmp,current_tmp,largest_tmp2,smallest_tmp;
 
-void pw_send_queue_setup(const struct pw_comm_data *c,send_queue *queue,int *map,int *mapf,int mf_nt)
+  *map_e = (int**)malloc(mf_nt*sizeof(int*));
+  *largest_dependence = (int*)malloc(data_size*sizeof(int));
+  current_map_index = 0;
+  last_i = 0;
+  for(i=0;i<data_size;i++){
+    (*largest_dependence)[i] = i; //You always are dependent on yourself!
+  }
+  for(i=0;i<mf_nt;i++){
+    (*map_e)[i] = (int*)malloc(2*sizeof(int));
+    largest_tmp = -1;
+    //Find largest in group - probably just the last in each group
+    // for local maps
+    for(j=0;j<mapf[i*2+1]+1;j++){
+      current_tmp = map[mapf[i*2]+j];
+      if(current_tmp>largest_tmp){
+        largest_tmp= current_tmp;
+      }
+    }
+    //Store largest dependence for everyone
+    for(j=0;j<mapf[i*2+1]+1;j++){
+      (*largest_dependence)[map[mapf[i*2]+j]] = largest_tmp;
+    }
+    
+    //Store largest in group and group number
+    (*map_e)[i][0] = largest_tmp;
+    (*map_e)[i][1] = i*2;
+  }
+
+  //Sort largest in group list
+  for(i=1;i<mf_nt;i++){
+    largest_tmp = (*map_e)[i][0];
+    largest_tmp2 = (*map_e)[i][1];
+    j=i-1;
+    while((largest_tmp<(*map_e)[j][0])&&(j>=0)){
+      (*map_e)[j+1][0] = (*map_e)[j][0];
+      (*map_e)[j+1][1] = (*map_e)[j][1];
+      j=j-1;
+      if(j==-1) break;
+    }
+    (*map_e)[j+1][0] = largest_tmp;
+    (*map_e)[j+1][1] = largest_tmp2;
+  }
+
+
+  return;
+}
+
+
+void gs_element_map_setup_pw(const uint *map, int *mapf, int ***map_e,
+                             int mf_nt,int *largest_dependence)
+{
+  uint    i,j,k,current_map_index,current_mapf_index;
+  int     last_i,largest_tmp,current_tmp,largest_tmp2;
+
+  *map_e = (int**)malloc(mf_nt*sizeof(int*));
+  current_map_index = 0;
+  last_i = 0;
+
+  for(i=0;i<mf_nt;i++){
+    (*map_e)[i] = (int*)malloc(2*sizeof(int));
+    //Get the largest dependence of the first element of the pwd map
+    // The first element is an index into the real data array, rather than
+    // the buf array, which the other indices represent
+    largest_tmp = largest_dependence[map[mapf[i*2]]];
+    //Store largest in group and group number
+    (*map_e)[i][0] = largest_tmp;
+    (*map_e)[i][1] = i*2;
+  }
+
+  //Sort largest in group list
+  for(i=1;i<mf_nt;i++){
+    largest_tmp = (*map_e)[i][0];
+    largest_tmp2 = (*map_e)[i][1];
+    j=i-1;
+    while((largest_tmp<(*map_e)[j][0])&&(j>=0)){
+      (*map_e)[j+1][0] = (*map_e)[j][0];
+      (*map_e)[j+1][1] = (*map_e)[j][1];
+      j=j-1;
+      if(j==-1) break;
+    }
+    (*map_e)[j+1][0] = largest_tmp;
+    (*map_e)[j+1][1] = largest_tmp2;
+  }
+
+
+  return;
+}
+
+void fill_pack_queue(send_queue *queue,int **map_e,int largest_index,int mf_nt)
+{
+  int i,k,tmp_last_packed;
+
+  tmp_last_packed = queue->last_packed;
+  k=0;
+  for(i=tmp_last_packed;i<mf_nt;i++){ 
+    /* if(comm_gbl_id==0) printf("i: %d last_packed: %d\n",i,tmp_last_packed); */
+    /* if(comm_gbl_id==0) printf("largest_index: %d\n",largest_index); */
+    /* if(comm_gbl_id==0) printf("map_e: %d %d\n",map_e[i][0],map_e[i][1]); */
+
+    if(map_e[i][0]<largest_index){ 
+      queue->pack_queue[k] = map_e[i][1];
+      queue->last_packed   = i+1;
+      k++;
+    } else {
+      break;
+    }
+  }
+  queue->pack_num = k;
+}
+
+void fill_pack_queue_post(send_queue *queue,int *map,int *mapf,int largest_index,int mf_nt)
+{
+  int i,k,tmp_last_packed;
+
+  tmp_last_packed = queue->last_packed;
+  k=0;
+  for(i=tmp_last_packed;i<mf_nt;i++){ 
+    /* if(comm_gbl_id==0) printf("i: %d last_packed: %d\n",i,tmp_last_packed); */
+    /* if(comm_gbl_id==0) printf("largest_index: %d\n",largest_index); */
+    /* if(comm_gbl_id==0) printf("map_e: %d %d\n",map_e[i][0],map_e[i][1]); */
+    
+    if(map[mapf[i*2]]<largest_index){ 
+      queue->pack_queue[k] = i*2;
+      queue->last_packed   = i+1;
+      k++;
+    } else {
+      break;
+    }
+  }
+  queue->pack_num = k;
+}
+
+void fill_pack_queue_from_buf(send_queue *queue,int **map_e,int largest_index,int mf_nt)
+{
+  int i,k,tmp_last_packed;
+
+  tmp_last_packed = queue->last_packed;
+  k=0;
+  for(i=tmp_last_packed;i<mf_nt;i++){ 
+    /* if(comm_gbl_id==0) printf("i: %d last_packed: %d\n",i,tmp_last_packed); */
+    /* if(comm_gbl_id==0) printf("largest_index: %d\n",largest_index); */
+    /* if(comm_gbl_id==0) printf("map_e: %d %d\n",map_e[i][0],map_e[i][1]); */
+    if(map_e[i][0]<largest_index){
+      queue->pack_queue[k] = map_e[i][1];
+      queue->last_packed   = i+1;
+      k++;
+    } else {
+      break;
+    }
+  }
+  queue->pack_num = k;
+
+}
+void simple_queue_setup(send_queue *queue,int mf_nt)
+{
+ queue->pack_queue = tmalloc(int,mf_nt);
+}
+
+void pw_send_queue_setup(const struct pw_comm_data *c,send_queue *queue,int *map,int *mapf,
+                         int mf_nt,int data_size)
 {
   const uint *p, *pe, *size=c->size;
   uint    i,j,k,current_size,num_bufs;
   int     total_size,total_num;
-
+  
   queue->buf_current = tmalloc(int,c->n);
-  queue->map_to_buf = tmalloc(int,c->total);
+  queue->map_to_buf = tmalloc(int,data_size);
+  queue->map_to_buf2 = tmalloc(int,data_size);
   queue->buf_size = tmalloc(int,c->n);
   queue->queue = tmalloc(int,c->n);
+  queue->pack_queue = tmalloc(int,mf_nt);
   queue->buf_offset = tmalloc(int,c->n);
   i=0;total_size=0;k=0;
   for(p=c->p,pe=p+c->n;p!=pe;++p) {
@@ -2178,9 +2466,22 @@ void pw_send_queue_setup(const struct pw_comm_data *c,send_queue *queue,int *map
     i++;
   }
   total_num = i;
+  for(k=0;k<data_size;k++){
+    queue->map_to_buf[k] = -1;
+  }
+  for(k=0;k<mf_nt;k++) {
+    for(i=0;i<total_num;i++){
+      //      printf("map stuff: %d\n",map[mapf[k*2]+mapf[k*2+1]]);
+      if(map[mapf[k*2]+mapf[k*2+1]] < queue->buf_offset[i]) {
+        break;
+      }
+    }
+    queue->map_to_buf2[map[mapf[k*2]]] = i-1;
+  }
 
   for(k=0;k<mf_nt;k++) {
       for(j=0;j<mapf[k*2+1];j++) {
+        //        printf("map[mapf[%d*2]+%d+1] = %d\n",k,j,map[mapf[k*2]+j+1]);
         //Search for which buf this belongs in
         for(i=0;i<total_num;i++){
           if(map[mapf[k*2]+j+1] < queue->buf_offset[i]) {
@@ -2189,8 +2490,12 @@ void pw_send_queue_setup(const struct pw_comm_data *c,send_queue *queue,int *map
         }
         queue->map_to_buf[map[mapf[k*2]+j+1]] = i-1;
       }
-  }
-
+    }
+  /* if(comm_gbl_id==1) printf("before 1\n"); */
+  /* for(i=0;i<total_size;i++){ */
+  /*   if(comm_gbl_id==1) printf("map_to_buf[%d] = %d\n",i,queue->map_to_buf[i]); */
+  /* } */
+  /* if(comm_gbl_id==1) printf("after 1\n"); */
   return;
 }
 
@@ -2517,8 +2822,8 @@ void fgs_free(const sint *handle)
 void print_map_e(int **map_e,int n){
   int i;
   for(i=0;i<n;i++){
-    printf("map_e[%d,0] = %d\n",i,map_e[i][0]);
-    printf("map_e[%d,1] = %d\n",i,map_e[i][1]);
+    //    printf("map_e[%d,0] = %d  map_e[%d,1] = %d map_e[%d,2] = %d map_e[%d,3] = %d\n",i,map_e[i][0],i,map_e[i][1],i,map_e[i][2],i,map_e[i][3]);
+    printf("map_e[%d,0] = %d  map_e[%d,1] = %d\n",i,map_e[i][0],i,map_e[i][1]);
   }
 }
 

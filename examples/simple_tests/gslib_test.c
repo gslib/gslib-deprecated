@@ -225,16 +225,16 @@ int main(int narg, char *arg[])
   //  if(fail==0) printf("Add success! on %d\n",nid);
 
 
-  for(m=0;m<2;m++){
+  for(m=0;m<1;m++){
   //Fill v
 #pragma acc parallel loop present(v[0:localBufSpace],recvbuf[0:localBufSpace])
    for(i=0;i<localBufSpace;i++){
      v[i] = 0;
    }
 
-   for(i=0;i<localBufSpace;i++){
-   v[i] = recvbuf[i];
-   }
+   /* for(i=0;i<localBufSpace;i++){ */
+   /* v[i] = recvbuf[i]; */
+   /* } */
   fflush(stdout);
   MPI_Barrier(MPI_COMM_WORLD);
 
@@ -253,17 +253,17 @@ int main(int narg, char *arg[])
   /*   } */
   /* } */
   gs_irecv(v,dom,gs_mul,0,gsh,0);
-  gs_isend(v,dom,gs_mul,0,gsh,0);
-  /* for(i=0;i<localBufSpace/2;i++){ */
-  /*   /\* for(j=i*4;j<i*4+4;j++){ *\/ */
-  /*   /\*   //      printf("j: %d\n",j); *\/ */
-  /*   /\*     v[j] = recvbuf[j]; *\/ */
-  /*   /\*     //        printf("v[%d]: %d\n",j,v[j]); *\/ */
-  /*   /\* } *\/ */
-  /*   gs_isend_e(v,dom,gs_mul,0,gsh,0,i*2,2); */
-  /* } */
+  //  gs_isend(v,dom,gs_mul,0,gsh,0);
+  for(i=0;i<localBufSpace/4;i++){
+    for(j=i*4;j<i*4+4;j++){
+      //      printf("j: %d\n",j);
+        v[j] = recvbuf[j];
+        //        printf("v[%d]: %d\n",j,v[j]);
+    }
+    gs_isend_e(v,dom,gs_mul,0,gsh,0,i*4,4);
+  }
 
-   gs_wait_e(v,dom,gs_mul,0,gsh,0,0,localBufSpace);
+  //  gs_wait(v,dom,gs_mul,0,gsh,0);
 
   //gs(v,dom,gs_mul,0,gsh,0);
 
@@ -271,17 +271,28 @@ int main(int narg, char *arg[])
   fail = 0;
   //  MPI_Barrier(MPI_COMM_WORLD);
 
-  //Check v
-  for(i=0;i<localBufSpace/2;i++){
-    //    gs_wait_e(v,dom,gs_mul,0,gsh,0,i*2,2);
-
-    for(j=0;j<2;j++){
-      if(v[i]!=pow(recvbuf[i],duplicate_count[recvbuf[i]])){
-        printf("Mult failure on core %d index %d\n",nid,i);
-        printf("v[%d] %f recv %d %d\n",i,v[i],recvbuf[i],duplicate_count[recvbuf[i]]);
+  for(i=0;i<localBufSpace/4;i++){
+    gs_wait_e(v,dom,gs_mul,0,gsh,0,i*4,4);
+       /* printf("v[%d] = %f\n",i,v[i]); */
+    for(j=i*4;j<i*4+4;j++){
+      if(v[j]!=pow(recvbuf[j],duplicate_count[recvbuf[j]])){
+        printf("Mult failure on core %d index %d\n",nid,j);
+        printf("v[%d] %f recv %d %d\n",j,v[j],recvbuf[j],duplicate_count[recvbuf[j]]);
         fail = 1;
       }
     }
+  }
+
+  //Check v
+  for(i=0;i<localBufSpace/4;i++){
+    gs_wait_e(v,dom,gs_mul,0,gsh,0,i*4,4);
+    //    printf("v[%d] = %f\n",i,v[i]);
+    if(v[i]!=pow(recvbuf[i],duplicate_count[recvbuf[i]])){
+      printf("Mult failure on core %d index %d\n",nid,i);
+      printf("v[%d] %f recv %d %d\n",i,v[i],recvbuf[i],duplicate_count[recvbuf[i]]);
+      fail = 1;
+    }
+
   }
 
   }
